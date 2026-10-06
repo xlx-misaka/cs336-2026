@@ -1,0 +1,34 @@
+# Former nested Git repository kept as a local backup.
+/assignments/.git.local-backup/
+
+# Python environments, caches, and build products.
+**/__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.pytest_tmp_*/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+*.egg-info/
+build/
+dist/
+
+# Large local datasets and generated model artifacts.
+**/data/
+**/checkpoints/
+**/experiments/**/*.pt
+**/experiments/**/*.pth
+*.bin
+*.zip
+
+# Local logs and editor/OS files.
+*.log
+.DS_Store
+Thumbs.db

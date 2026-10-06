@@ -1,0 +1,20 @@
+# Python environments and caches
+**/.venv/
+**/venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest_tmp/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# Datasets and large run artifacts: download or regenerate these locally
+data/
+checkpoints/
+experiments/**/*.pt
+experiments/**/*.pth
+*.zip
+*.log

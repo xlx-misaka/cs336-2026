@@ -1,0 +1,75 @@
+{
+  "task": "generate_text",
+  "tokenizer": {
+    "special_tokens": [
+      "<|endoftext|>"
+    ]
+  },
+  "bpe": {
+    "train_text_path": "data/TinyStoriesV2-GPT4-train.txt",
+    "vocab_size": 10000,
+    "output_path": "data/TinyStories_bpe_data.json"
+  },
+  "encoding": {
+    "tokenizer_path": "data/TinyStories_bpe_data.json",
+    "buff_size": 4194304,
+    "train": {
+      "text_path": "data/TinyStoriesV2-GPT4-train.txt",
+      "output_path": "data/TinyStories_token_indices_train.bin"
+    },
+    "valid": {
+      "text_path": "data/TinyStoriesV2-GPT4-valid.txt",
+      "output_path": "data/TinyStories_token_indices_valid.bin"
+    }
+  },
+  "model": {
+    "vocab_size": 10000,
+    "context_length": 256,
+    "d_model": 512,
+    "num_layers": 4,
+    "num_heads": 16,
+    "d_ff": 1344,
+    "rope_theta": 10000.0,
+    "use_rms_norm": true,
+    "norm_position": "pre",
+    "use_rope": true,
+    "ffn_type": "swiglu"
+  },
+  "training": {
+    "train_path": "data/TinyStories_token_indices_train.bin",
+    "valid_path": "data/TinyStories_token_indices_valid.bin",
+    "batch_size": 32,
+    "num_steps": 40000,
+    "max_learning_rate": 0.001,
+    "min_learning_rate": 0.00001,
+    "warmup_iters": 1000,
+    "max_l2_norm": 1.0,
+    "eval_iters": 200,
+    "eval_batch_size": 32,
+    "log_interval": 100,
+    "eval_interval": 500,
+    "checkpoint_interval": 5000,
+    "experiment_name": "tinystories_base",
+    "resume_path": null,
+    "device": null,
+    "optimizer": {
+      "name": "AdamW",
+      "weight_decay": 0.01,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "eps": 0.00000001
+    }
+  },
+  "generation": {
+    "tokenizer_path": "data/TinyStories_bpe_data.json",
+    "checkpoint": "experiments/tinystories_base/20260903_203545/checkpoints/step_040000.pt",
+    "prompt": "Once upon a time,",
+    "max_generation_length": 256,
+    "temperature": 0.8,
+    "top_p": 0.9,
+    "end_token": "<|endoftext|>",
+    "device": null
+  }
+}

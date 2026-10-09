@@ -1,5 +1,8 @@
+import torch
+
+
 def main():
-    print("Hello, World!")
+    print(torch.cuda.is_available())
 
 
 if __name__ == "__main__":

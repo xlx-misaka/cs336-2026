@@ -143,7 +143,7 @@ def main():
     torch.manual_seed(args.seed)
     if args.annotate:
         import cs336_basics.model
-        from cs336_systems.annotated_units import annotated_scaled_dot_product_attention
+        from scripts.annotated_units import annotated_scaled_dot_product_attention
 
         cs336_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
 

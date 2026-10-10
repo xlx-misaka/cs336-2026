@@ -1,6 +1,5 @@
 import argparse
 import contextlib
-import csv
 import statistics
 import timeit
 
@@ -59,9 +58,9 @@ def parse_args():
         help="emit NVTX ranges and swap in the annotated SDPA (use when profiling with nsys)",
     )
     parser.add_argument(
-        "--results-file",
-        default=None,
-        help="optional path to write the timings to as CSV",
+        "--mixed-precision",
+        action="store_true",
+        help="use mixed precision for the forward pass",
     )
 
     args = parser.parse_args()
@@ -116,49 +115,34 @@ def make_batch(args, device):
     return x, y
 
 
-def run_step(mode, model, x, y, optimizer, vocab_size, *, annotate, no_grad):
-    if mode == "forward":
+def run_step(args, model, x, y, optimizer):
+
+    cast_ctx = torch.autocast(device_type=args.device, dtype=torch.bfloat16) if args.mixed_precision else contextlib.nullcontext()
+
+    if args.mode == "forward":
         # forward-only 既可以测带 autograd 图的训练前向，也可以测纯推理（--no-grad）
-        grad_ctx = torch.no_grad() if no_grad else contextlib.nullcontext()
-        with grad_ctx, nvtx_range("forward", annotate):
+        grad_ctx = torch.no_grad() if args.no_grad else contextlib.nullcontext()
+        with grad_ctx, nvtx_range("forward", args.annotate), cast_ctx:
             model(x)
         return
 
     optimizer.zero_grad(set_to_none=True)
 
-    with nvtx_range("forward", annotate):
+    with nvtx_range("forward", args.annotate), cast_ctx:
         logits = model(x)
 
-    with nvtx_range("loss", annotate):
+    with nvtx_range("loss", args.annotate), cast_ctx:
         loss = F.cross_entropy(
-            logits.reshape(-1, vocab_size),
+            logits.reshape(-1, args.vocab_size),
             y.reshape(-1),
         )
 
-    with nvtx_range("backward", annotate):
+    with nvtx_range("backward", args.annotate):
         loss.backward()
 
-    if mode == "full":
-        with nvtx_range("optimizer", annotate):
+    if args.mode == "full":
+        with nvtx_range("optimizer", args.annotate):
             optimizer.step()
-
-
-def write_results(args, device, mean_s, median_s, stdv_s, step_times):
-    with open(args.results_file, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["key", "value"])
-        writer.writerow(["mode", args.mode])
-        writer.writerow(["device", str(device)])
-        writer.writerow(["model_size", args.model_size or "custom"])
-        writer.writerow(["context_length", args.context_length])
-        writer.writerow(["batch_size", args.batch_size])
-        writer.writerow(["warmup", args.warmup])
-        writer.writerow(["steps", args.steps])
-        writer.writerow(["mean_ms", f"{mean_s * 1000:.6f}"])
-        writer.writerow(["median_ms", f"{median_s * 1000:.6f}"])
-        writer.writerow(["stddev_ms", f"{stdv_s * 1000:.6f}"])
-        for index, elapsed in enumerate(step_times):
-            writer.writerow([f"step_{index}_ms", f"{elapsed * 1000:.6f}"])
 
 
 def main():
@@ -182,12 +166,10 @@ def main():
 
     x, y = make_batch(args, device)
 
-    step_kwargs = dict(annotate=args.annotate, no_grad=args.no_grad)
-
     # warm-up：不记录时间，单独打 warmup 标签，方便在 nsys 里滤掉
     with nvtx_range("warmup", args.annotate):
         for _ in range(args.warmup):
-            run_step(args.mode, model, x, y, optimizer, args.vocab_size, **step_kwargs)
+            run_step(args, model, x, y, optimizer)
             synchronize(device)
 
     step_times = []
@@ -202,7 +184,7 @@ def main():
             with nvtx_range("step", args.annotate):
                 start = timeit.default_timer()
 
-                run_step(args.mode, model, x, y, optimizer, args.vocab_size, **step_kwargs)
+                run_step(args, model, x, y, optimizer)
 
                 # 题目要求：每个 step 后同步
                 synchronize(device)
@@ -222,9 +204,6 @@ def main():
     print(f"mean: {mean_s * 1000:.3f} ms/step")
     print(f"median: {median_s * 1000:.3f} ms/step")
     print(f"stddev: {stdv_s * 1000:.3f}")
-
-    if args.results_file:
-        write_results(args, device, mean_s, median_s, stdv_s, step_times)
 
 
 if __name__ == "__main__":

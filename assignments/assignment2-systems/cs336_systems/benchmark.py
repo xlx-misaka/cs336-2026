@@ -126,8 +126,6 @@ def run_step(args, model, x, y, optimizer):
             model(x)
         return
 
-    optimizer.zero_grad(set_to_none=True)
-
     with nvtx_range("forward", args.annotate), cast_ctx:
         logits = model(x)
 
@@ -182,6 +180,8 @@ def main():
     with nvtx_range("benchmark", args.annotate):
         for _ in range(args.steps):
             with nvtx_range("step", args.annotate):
+                optimizer.zero_grad(set_to_none=True)
+
                 start = timeit.default_timer()
 
                 run_step(args, model, x, y, optimizer)

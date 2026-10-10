@@ -25,8 +25,8 @@ def parse_args():
 
     parser.add_argument(
         "--mode",
-        choices=["forward", "backward", "full"],
-        default="forward",
+        choices=["fwd", "bwd", "train", "eval"],
+        default="eval",
         help="Benchmark mode",
     )
     parser.add_argument(
@@ -46,11 +46,6 @@ def parse_args():
     parser.add_argument(
         "--device",
         default="cuda" if torch.cuda.is_available() else "cpu",
-    )
-    parser.add_argument(
-        "--no-grad",
-        action="store_true",
-        help="run --mode forward as inference under torch.no_grad()",
     )
     parser.add_argument(
         "--annotate",
@@ -118,16 +113,13 @@ def make_batch(args, device):
 def run_step(args, model, x, y, optimizer):
 
     cast_ctx = torch.autocast(device_type=args.device, dtype=torch.bfloat16) if args.mixed_precision else contextlib.nullcontext()
+    grad_ctx = torch.no_grad() if args.mode == "eval" else contextlib.nullcontext()
 
-    if args.mode == "forward":
-        # forward-only 既可以测带 autograd 图的训练前向，也可以测纯推理（--no-grad）
-        grad_ctx = torch.no_grad() if args.no_grad else contextlib.nullcontext()
-        with grad_ctx, nvtx_range("forward", args.annotate), cast_ctx:
-            model(x)
-        return
-
-    with nvtx_range("forward", args.annotate), cast_ctx:
+    with nvtx_range("forward", args.annotate), cast_ctx, grad_ctx:
         logits = model(x)
+
+    if args.mode == "fwd" or args.mode == "eval":
+        return
 
     with nvtx_range("loss", args.annotate), cast_ctx:
         loss = F.cross_entropy(
@@ -138,9 +130,11 @@ def run_step(args, model, x, y, optimizer):
     with nvtx_range("backward", args.annotate):
         loss.backward()
 
-    if args.mode == "full":
-        with nvtx_range("optimizer", args.annotate):
-            optimizer.step()
+    if args.mode == "bwd":
+        return
+
+    with nvtx_range("optimizer", args.annotate):
+        optimizer.step()
 
 
 def main():
@@ -154,7 +148,7 @@ def main():
         cs336_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
 
     model = build_model(args, device)
-    if args.mode == "forward" and args.no_grad:
+    if args.mode == "eval":
         model.eval()
     else:
         model.train()

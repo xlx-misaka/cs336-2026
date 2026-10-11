@@ -281,9 +281,9 @@ def benchmark():
 
     with _nvtx_range("benchmark", args.annotate):
         for _ in range(args.steps):
-            with _nvtx_range("step", args.annotate):
-                optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)
 
+            with _nvtx_range("step", args.annotate):
                 start = timeit.default_timer()
 
                 _run_step(args, device, model, x, y, optimizer)

@@ -130,6 +130,13 @@ def _build_model(args, device):
     return model
 
 
+def _annotate_units():
+    import cs336_basics.model
+    from scripts.annotated_units import annotated_scaled_dot_product_attention
+
+    cs336_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
+
+
 def _make_batch(args, device):
     # batch 生成不计入计时，因此只生成一次并复用
     x = torch.randint(
@@ -224,10 +231,7 @@ def benchmark():
     torch.manual_seed(args.seed)
 
     if args.annotate:
-        import cs336_basics.model
-        from scripts.annotated_units import annotated_scaled_dot_product_attention
-
-        cs336_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
+        _annotate_units()
 
     model = _build_model(args, device)
 

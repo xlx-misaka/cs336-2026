@@ -1,25 +1,40 @@
 import torch
+from torch import nn
 
 
-def main():
-    s = torch.tensor(0, dtype=torch.float32)
-    for i in range(1000):
-        s += torch.tensor(0.01, dtype=torch.float32)
-    print(s)
-    s = torch.tensor(0, dtype=torch.float16)
-    for i in range(1000):
-        s += torch.tensor(0.01, dtype=torch.float16)
-    print(s)
-    s = torch.tensor(0, dtype=torch.float32)
-    for i in range(1000):
-        s += torch.tensor(0.01, dtype=torch.float16)
-    print(s)
-    s = torch.tensor(0, dtype=torch.float32)
-    for i in range(1000):
-        x = torch.tensor(0.01, dtype=torch.float16)
-        s += x.type(torch.float32)
-    print(s)
+x = torch.randn((4, 512, 2560), requires_grad=True)
 
 
-if __name__ == "__main__":
-    main()
+class RMSNorm(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        eps: float = 1e-5,
+        device=None,
+    ):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size, device=device))
+        self.eps = eps
+
+    def forward(self, x):
+        rms = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        x = x * rms
+        return self.weight * x
+
+
+def pack_hook(t):
+    shape, dtype, grad_fn = t.shape, t.dtype, t.grad_fn
+    print(f"Saving residual: {shape=}, {dtype=}, {grad_fn=}")
+    return t
+
+
+def unpack_hook(t):
+    shape, dtype, grad_fn = t.shape, t.dtype, t.grad_fn
+    print(f"Loading residual: {shape=}, {dtype=}, {grad_fn=}")
+    return t
+
+
+ln = torch.compile(RMSNorm(x.shape[-1]))
+with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+    y = ln(x)
+    y.sum().backward()

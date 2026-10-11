@@ -111,22 +111,6 @@ def _synchronize(device):
         torch.cuda.synchronize(device)
 
 
-def _reset_peak_memory(device):
-    """Reset CUDA peak-memory counters so the next measured region is isolated."""
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-
-
-def _peak_memory_gib(device):
-    """Return peak CUDA memory (GiB) for the current device, or None on CPU."""
-    if device.type != "cuda":
-        return None
-    return {
-        "allocated": torch.cuda.max_memory_allocated(device) / 1024**3,
-        "reserved": torch.cuda.max_memory_reserved(device) / 1024**3,
-    }
-
-
 def _nvtx_range(name, enabled):
     """NVTX range context manager, or a no-op when profiling is disabled."""
     return nvtx.range(name) if enabled else contextlib.nullcontext()
@@ -200,7 +184,7 @@ def _save_mem_info(args):
     print(f"memory_profile: {snapshot_path}")
 
 
-def _save_time_info(args, device, step_times, peak_mem=None):
+def _save_time_info(args, device, step_times):
 
     mean_s = statistics.mean(step_times)
     median_s = statistics.median(step_times)
@@ -214,7 +198,6 @@ def _save_time_info(args, device, step_times, peak_mem=None):
             "median": median_s * 1000,
             "stddev": stdv_s * 1000,
         },
-        "peak_mem_gib": peak_mem,
         "step_times_ms": [t * 1000 for t in step_times],
         "environment": {
             "torch_version": torch.__version__,
@@ -268,9 +251,6 @@ def benchmark():
     # 开始前同步，避免上一个 step 的异步 CUDA 工作混入当前计时
     _synchronize(device)
 
-    # 重置峰值显存统计：只统计"正式测量"这段区间的高水位
-    _reset_peak_memory(device)
-
     # 正式测量：benchmark 包住全部测量步，每个 step 再单独一个 range。
 
     if args.mem_profile:
@@ -301,9 +281,8 @@ def benchmark():
 
     # 写快照/收尾后同步，再读取峰值显存，避免异步 kernel 还没跑完就取值
     _synchronize(device)
-    peak_mem = _peak_memory_gib(device)
 
-    _save_time_info(args, device, step_times, peak_mem)
+    _save_time_info(args, device, step_times)
 
     print("=" * 80)
     print("Benchmark complete!")

@@ -197,7 +197,7 @@ def _save_mem_info(args):
     torch.cuda.memory._dump_snapshot(str(snapshot_path))
 
     print("=" * 80)
-    print(f"🚩memory_profile🚩: {snapshot_path}")
+    print(f"memory_profile: {snapshot_path}")
 
 
 def _save_time_info(args, device, step_times, peak_mem=None):
@@ -230,7 +230,7 @@ def _save_time_info(args, device, step_times, peak_mem=None):
     )
 
     print("=" * 80)
-    print(f"🚩time_profile🚩: {json_path}")
+    print(f"time_profile: {json_path}")
 
 
 def benchmark():
@@ -277,7 +277,7 @@ def benchmark():
         torch.cuda.memory._record_memory_history(max_entries=1000000)
 
     print("=" * 80)
-    print("🛫🛫🛫Benchmark start.🛫🛫🛫")
+    print("Benchmark start!")
 
     with _nvtx_range("benchmark", args.annotate):
         for _ in range(args.steps):
@@ -306,7 +306,7 @@ def benchmark():
     _save_time_info(args, device, step_times, peak_mem)
 
     print("=" * 80)
-    print("🛬🛬🛬Benchmark complete.🛬🛬🛬")
+    print("Benchmark complete!")
     print("=" * 80)
 
 

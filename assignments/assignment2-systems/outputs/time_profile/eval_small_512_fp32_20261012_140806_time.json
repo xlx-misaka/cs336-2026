@@ -1,0 +1,44 @@
+{
+  "timestamp": "20261012_140806",
+  "args": {
+    "mode": "eval",
+    "model_size": "small",
+    "vocab_size": 10000,
+    "context_length": 512,
+    "batch_size": 4,
+    "rope_theta": 10000.0,
+    "warmup": 5,
+    "steps": 10,
+    "lr": 0.001,
+    "seed": 0,
+    "device": "cuda",
+    "annotate": false,
+    "mixed_precision": false,
+    "d_model": 768,
+    "d_ff": 3072,
+    "num_layers": 12,
+    "num_heads": 12
+  },
+  "summary_ms": {
+    "mean": 101.63680000114255,
+    "median": 101.23994998866692,
+    "stddev": 1.5056875616715344
+  },
+  "step_times_ms": [
+    100.60539998812601,
+    99.85719999531284,
+    100.51940003177151,
+    104.46540004340932,
+    104.12420000648126,
+    101.81749996263534,
+    101.06489999452606,
+    101.43410001182929,
+    101.13849997287616,
+    101.34140000445768
+  ],
+  "environment": {
+    "torch_version": "2.11.0+cu130",
+    "cuda_version": "13.0",
+    "gpu": "NVIDIA GeForce RTX 5060 Laptop GPU"
+  }
+}

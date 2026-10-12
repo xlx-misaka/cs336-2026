@@ -72,19 +72,11 @@ def _parse_args():
         action="store_true",
         help="use mixed precision for the forward pass",
     )
-    parser.add_argument(
-        "--mem-profile",
-        action="store_true",
-        help="profile memory usage",
-    )
 
     args = parser.parse_args()
 
     if args.steps <= 0:
         raise ValueError("--steps must be positive")
-
-    if args.mem_profile:
-        assert args.device == "cuda", "Memory profiling is only supported on CUDA"
 
     for key, value in _MODEL_SIZES[args.model_size].items():
         setattr(args, key, value)
@@ -257,8 +249,7 @@ def benchmark():
 
     # 正式测量：benchmark 包住全部测量步，每个 step 再单独一个 range。
 
-    if args.mem_profile:
-        torch.cuda.memory._record_memory_history(max_entries=1000000)
+    torch.cuda.memory._record_memory_history(max_entries=1000000)
 
     print("=" * 80)
     print("Benchmark start!")
@@ -279,12 +270,9 @@ def benchmark():
 
             step_times.append(elapsed)
 
-    if args.mem_profile:
-        _save_mem_info(args)
-        torch.cuda.memory._record_memory_history(enabled=None)
+    _save_mem_info(args)
 
-    # 写快照/收尾后同步，再读取峰值显存，避免异步 kernel 还没跑完就取值
-    _synchronize(device)
+    torch.cuda.memory._record_memory_history(enabled=None)
 
     _save_time_info(args, device, step_times)
 

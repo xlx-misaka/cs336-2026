@@ -249,7 +249,8 @@ def benchmark():
 
     # 正式测量：benchmark 包住全部测量步，每个 step 再单独一个 range。
 
-    torch.cuda.memory._record_memory_history(max_entries=1000000)
+    if device.type == "cuda":
+        torch.cuda.memory._record_memory_history(max_entries=1000000)
 
     print("=" * 80)
     print("Benchmark start!")
@@ -272,7 +273,8 @@ def benchmark():
 
     _save_mem_info(args)
 
-    torch.cuda.memory._record_memory_history(enabled=None)
+    if device.type == "cuda":
+        torch.cuda.memory._record_memory_history(enabled=None)
 
     _save_time_info(args, device, step_times)
 

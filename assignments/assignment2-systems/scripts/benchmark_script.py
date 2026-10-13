@@ -26,10 +26,10 @@ _MODEL_SIZES = {
 _OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
 _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-_MEM_PROFILE_DIR = _OUTPUT_DIR / "mem_profile"
+_MEM_PROFILE_DIR = _OUTPUT_DIR / "mem"
 _MEM_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
-_TIME_PROFILE_DIR = _OUTPUT_DIR / "time_profile"
+_TIME_PROFILE_DIR = _OUTPUT_DIR / "time"
 _TIME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
 _TIME_INFO = datetime.now().strftime("%Y%m%d_%H%M%S")

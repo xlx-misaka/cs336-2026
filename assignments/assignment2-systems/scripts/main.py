@@ -1,15 +1,35 @@
 import torch
+
 from cs336_basics.model import RotaryEmbedding, TransformerBlock
+from torch.utils.checkpoint import checkpoint
 
-d_model, d_ff, num_heads, context_length = 768, 3072, 12, 512
-block = TransformerBlock(d_model=d_model, d_ff=d_ff, num_heads=num_heads, positional_encoder=RotaryEmbedding(dim=d_model // num_heads, context_length=context_length))
+if not torch.cuda.is_available():
+    raise RuntimeError("需要 CUDA GPU 才能运行")
 
-# Fuse as much torch.compile will allow
-block = torch.compile(block, fullgraph=True)
-x = torch.randn((4, context_length, d_model), requires_grad=True)
+device = torch.device("cuda")
 
+d_model = 768
+d_ff = 3072
+num_heads = 12
+context_length = 512
+batch_size = 4
 
-# Now logs the number of bytes saved
+block = TransformerBlock(
+    d_model=d_model,
+    d_ff=d_ff,
+    num_heads=num_heads,
+    positional_encoder=RotaryEmbedding(
+        dim=d_model // num_heads,
+        context_length=context_length,
+    ),
+).to(device)
+
+x = torch.randn(
+    (batch_size, context_length, d_model),
+    device=device,
+    requires_grad=True,
+)
+
 total_size_bytes = 0
 
 
@@ -23,12 +43,30 @@ def pack_hook(t):
     return t
 
 
-def unpack_hook(t):
-    return t
+def unpack_hook(tensor):
+    return tensor
 
 
-# Run forward pass, saving for backward
+def two_blocks(x):
+    x = block(x)
+    x = block(x)
+    return x
+
+
+def four_blocks_checkpoint(x):
+    # checkpoint throws out all the saved tensors until the backward pass
+    # when getting to the checkpointed block in the backward pass,
+    # it reruns a forward pass to produce the saved tensors,
+    # then completes normal backward pass.
+    x = checkpoint(two_blocks, x, use_reentrant=False)
+    x = checkpoint(two_blocks, x, use_reentrant=False)
+    return x
+
+
 with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-    y = block(x)
+    y = four_blocks_checkpoint(x)
 
-print(f"Total size of saved tensors in single TransformerBlock: {total_size_bytes / (1024**2):.2f} MiB")
+assert y is not None
+
+print(f"Output shape: {tuple(y.shape)}")
+print(f"Total size of saved tensors in four TransformerBlocks: {total_size_bytes / (1024**2):.2f} MiB")

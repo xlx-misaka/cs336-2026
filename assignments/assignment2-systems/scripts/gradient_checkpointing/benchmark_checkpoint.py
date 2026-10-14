@@ -22,13 +22,13 @@ def pack_hook(t):
     global total_size_bytes
     shape, dtype, grad_fn = t.shape, t.dtype, t.grad_fn
     total_size_bytes += t.numel() * t.element_size()
-    print(f"Saving residual: {shape=}, {dtype=}, {grad_fn=}")
+    # print(f"Saving residual: {shape=}, {dtype=}, {grad_fn=}")
     return t
 
 
 def unpack_hook(t):
     shape, dtype, grad_fn = t.shape, t.dtype, t.grad_fn
-    print(f"Loading residual: {shape=}, {dtype=}, {grad_fn=}")
+    # print(f"Loading residual: {shape=}, {dtype=}, {grad_fn=}")
     return t
 
 

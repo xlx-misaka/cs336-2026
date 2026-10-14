@@ -1,9 +1,14 @@
+import csv
 import gc
+from pathlib import Path
 import statistics
 import timeit
 
 from cs336_basics import model
 import torch
+
+
+_OUTPUT_DIR = Path(__file__).resolve().parent
 
 _STEP = 100
 
@@ -96,20 +101,75 @@ def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" 
     print(f"前向传播平均峰值内存: {fwd_peak_mem_mean / 1024**2:.2f} MiB")
     print(f"反向传播总平均峰值内存: {bwd_peak_mem_mean / 1024**2:.2f} MiB")
 
+    return {
+        "d_model": d_model,
+        "context_length": context_length,
+        "batch_size": batch_size,
+        "forward_ms": fwd_time_mean * 1000,
+        "backward_ms": bwd_time_mean * 1000,
+        "before_backward_MiB": fwd_use_mem_mean / 1024**2,
+        "forward_peak_MiB": fwd_peak_mem_mean / 1024**2,
+        "backward_phase_peak_MiB": bwd_peak_mem_mean / 1024**2,
+        "status": "OK",
+    }
+
+
+def _save_results_csv(results):
+    fieldnames = [
+        "d_model",
+        "context_length",
+        "batch_size",
+        "forward_ms",
+        "backward_ms",
+        "before_backward_MiB",
+        "forward_peak_MiB",
+        "backward_phase_peak_MiB",
+        "status",
+    ]
+
+    res_path = _OUTPUT_DIR / "benchmark_attn.csv"
+
+    with open(res_path, "w") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+
+    print("=" * 80)
+    print(f"Saved results to {dir}")
+
 
 if __name__ == "__main__":
     d_models = [16, 32, 64, 128]
     context_lengths = [256, 1024, 4096, 8192, 16384]
 
+    results = []
+
     for d_model in d_models:
         for context_length in context_lengths:
             try:
-                benchmark(d_model, context_length)
+                results.append(benchmark(d_model, context_length))
+
             except torch.cuda.OutOfMemoryError:
                 print("=" * 40 + f"d_model = {d_model} context_length = {context_length}" + "=" * 40)
                 print("CUDA 显存不足")
 
+                results.append(
+                    {
+                        "d_model": d_model,
+                        "context_length": context_length,
+                        "batch_size": 8,
+                        "forward_ms": "",
+                        "backward_ms": "",
+                        "before_backward_MiB": "",
+                        "forward_peak_MiB": "",
+                        "backward_phase_peak_MiB": "",
+                        "status": "OOM",
+                    }
+                )
+
             gc.collect()
             torch.cuda.empty_cache()
+
+    _save_results_csv(results)
 
     print("=" * 40 + "所有测试完成!" + "=" * 40)

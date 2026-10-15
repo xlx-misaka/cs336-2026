@@ -1,3 +1,4 @@
+import argparse
 import csv
 import gc
 from pathlib import Path
@@ -13,7 +14,21 @@ _OUTPUT_DIR = Path(__file__).resolve().parent
 _STEP = 100
 
 
-def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" if torch.cuda.is_available() else "cpu")):
+def _parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="use torch.compile",
+    )
+
+    args = parser.parse_args()
+
+    return args
+
+
+def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"), torch_compile=False):
 
     if device.type == "cpu":
         raise ValueError("CPU not supported")
@@ -26,8 +41,12 @@ def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" 
     j = torch.arange(0, context_length, device=device)[None, :]
     mask = i >= j
 
+    func_attn = model.scaled_dot_product_attention
+    if torch_compile:
+        func_attn = torch.compile(func_attn)
+
     def run_forward(Q, K, V, mask=None):
-        return model.scaled_dot_product_attention(Q, K, V, mask)
+        return func_attn(Q, K, V, mask)
 
     warmup_iter = 5
     for _ in range(warmup_iter):
@@ -114,7 +133,7 @@ def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" 
     }
 
 
-def _save_results_csv(results):
+def _save_results_csv(results, torch_compile=False):
     fieldnames = [
         "d_model",
         "context_length",
@@ -127,7 +146,7 @@ def _save_results_csv(results):
         "status",
     ]
 
-    res_path = _OUTPUT_DIR / "benchmark_attn.csv"
+    res_path = _OUTPUT_DIR / ("benchmark_attn.csv" if not torch_compile else "benchmark_attn_compile.csv")
 
     with open(res_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -139,6 +158,8 @@ def _save_results_csv(results):
 
 
 if __name__ == "__main__":
+    args = _parse_args()
+
     d_models = [16, 32, 64, 128]
     context_lengths = [256, 1024, 4096, 8192, 16384]
 
@@ -147,7 +168,7 @@ if __name__ == "__main__":
     for d_model in d_models:
         for context_length in context_lengths:
             try:
-                results.append(benchmark(d_model, context_length))
+                results.append(benchmark(d_model, context_length, torch_compile=args.compile))
 
             except torch.cuda.OutOfMemoryError:
                 print("=" * 40 + f"d_model = {d_model} context_length = {context_length}" + "=" * 40)
@@ -170,7 +191,7 @@ if __name__ == "__main__":
             gc.collect()
             torch.cuda.empty_cache()
 
-    _save_results_csv(results)
+    _save_results_csv(results, args.compile)
 
     print("=" * 40 + "所有测试完成!" + "=" * 40)
 

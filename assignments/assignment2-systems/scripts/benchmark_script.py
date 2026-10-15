@@ -72,6 +72,11 @@ def _parse_args():
         action="store_true",
         help="use mixed precision for the forward pass",
     )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="use torch.compile",
+    )
 
     args = parser.parse_args()
 
@@ -87,6 +92,7 @@ def _parse_args():
 def _args_info(args) -> str:
     """Return a filesystem-safe summary of the essential benchmark arguments."""
     precision = "bf16" if args.mixed_precision else "fp32"
+    compile = "compiled" if args.compile else "uncompiled"
     return "_".join(
         str(value)
         for value in (
@@ -94,6 +100,7 @@ def _args_info(args) -> str:
             args.model_size,
             args.context_length,
             precision,
+            compile,
         )
     )
 
@@ -234,6 +241,9 @@ def benchmark():
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
 
+    if args.compile:
+        model = torch.compile(model)
+
     x, y = _make_batch(args, device)
 
     # warm-up：不记录时间，单独打 warmup 标签，方便在 nsys 里滤掉
@@ -271,9 +281,9 @@ def benchmark():
 
             step_times.append(elapsed)
 
-    _save_mem_info(args)
-
     if device.type == "cuda":
+        _save_mem_info(args)
+
         torch.cuda.memory._record_memory_history(enabled=None)
 
     _save_time_info(args, device, step_times)

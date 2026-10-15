@@ -288,9 +288,9 @@ def benchmark():
     # warm-up：不记录时间，单独打 warmup 标签，方便在 nsys 里滤掉
     with _nvtx_range("warmup", args.annotate):
         for _ in range(args.warmup):
-            optimizer.zero_grad(set_to_none=True)
             _run_step(args, device, model, x, y, optimizer)
             _synchronize(device)
+            optimizer.zero_grad(set_to_none=True)
 
     step_times = []
 

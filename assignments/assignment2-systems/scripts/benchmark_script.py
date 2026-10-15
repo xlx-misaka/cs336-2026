@@ -300,7 +300,7 @@ def benchmark():
     # 正式测量：benchmark 包住全部测量步，每个 step 再单独一个 range。
 
     if device.type == "cuda":
-        torch.cuda.reset_max_memory_allocated(device)
+        torch.cuda.reset_peak_memory_stats(device)
         torch.cuda.memory._record_memory_history(max_entries=1000000)
 
     print("=" * 80)

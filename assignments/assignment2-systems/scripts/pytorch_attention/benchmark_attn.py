@@ -129,13 +129,13 @@ def _save_results_csv(results):
 
     res_path = _OUTPUT_DIR / "benchmark_attn.csv"
 
-    with open(res_path, "w") as f:
+    with open(res_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
 
     print("=" * 80)
-    print(f"Saved results to {dir}")
+    print(f"Saved results to {res_path}")
 
 
 if __name__ == "__main__":

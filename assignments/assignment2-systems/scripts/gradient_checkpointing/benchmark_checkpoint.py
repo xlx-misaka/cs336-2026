@@ -120,7 +120,6 @@ def benchmark(n, k):
     print("=" * 80)
     print(f"Total saved residual memory: {total_size_bytes / 1024**2:.2f} MiB")
     print(f"n = {n}, k = {k} :{mem / 1024**2:.2f} MiB")
-    print("=" * 80)
 
     return {"num_layers": n, "k": k, "peak_mem_MiB": mem / 1024**2, "saved_residual_MiB": total_size_bytes / 1024**2}
 
@@ -184,3 +183,5 @@ if __name__ == "__main__":
         results.append(benchmark(num_layers, k))
 
     _save_results_csv(results)
+
+    print("=" * 80)

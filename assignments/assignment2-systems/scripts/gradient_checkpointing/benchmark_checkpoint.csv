@@ -1,0 +1,8 @@
+﻿d_model,d_ff,num_heads,num_layers,context_length,batch_size
+768,3072,12,12,512,4
+
+k,peak_mem_MiB,saved_residual_MiB
+0.5,1222.677734375,144.0
+1,1219.802734375,72.0
+2,1472.59375,36.0
+3,1704.384765625,24.0

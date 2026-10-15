@@ -1,6 +1,6 @@
 import argparse
 import contextlib
-import json
+import csv
 import statistics
 import timeit
 from pathlib import Path
@@ -190,36 +190,75 @@ def _save_mem_info(args):
     print(f"memory_profile: {snapshot_path}")
 
 
-def _save_time_info(args, device, step_times):
-
+def _save_time_info(args, device, step_times, mem_peak_GiB):
     mean_s = statistics.mean(step_times)
     median_s = statistics.median(step_times)
     stdv_s = statistics.stdev(step_times) if len(step_times) > 1 else 0.0
 
-    record = {
+    csv_path = _TIME_PROFILE_DIR / "benchmark_results.csv"
+
+    fieldnames = [
+        "timestamp",
+        "mode",
+        "model_size",
+        "d_model",
+        "d_ff",
+        "num_layers",
+        "num_heads",
+        "context_length",
+        "batch_size",
+        "vocab_size",
+        "mixed_precision",
+        "compile",
+        "warmup",
+        "steps",
+        "device",
+        "gpu",
+        "torch_version",
+        "cuda_version",
+        "mean_ms",
+        "median_ms",
+        "stddev_ms",
+        "mem_peak_GiB",
+    ]
+
+    row = {
         "timestamp": _TIME_INFO,
-        "args": vars(args),
-        "summary_ms": {
-            "mean": mean_s * 1000,
-            "median": median_s * 1000,
-            "stddev": stdv_s * 1000,
-        },
-        "step_times_ms": [t * 1000 for t in step_times],
-        "environment": {
-            "torch_version": torch.__version__,
-            "cuda_version": torch.version.cuda,
-            "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
-        },
+        "mode": args.mode,
+        "model_size": args.model_size,
+        "d_model": args.d_model,
+        "d_ff": args.d_ff,
+        "num_layers": args.num_layers,
+        "num_heads": args.num_heads,
+        "context_length": args.context_length,
+        "batch_size": args.batch_size,
+        "vocab_size": args.vocab_size,
+        "mixed_precision": args.mixed_precision,
+        "compile": args.compile,
+        "warmup": args.warmup,
+        "steps": args.steps,
+        "device": str(device),
+        "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else "",
+        "torch_version": str(torch.__version__),
+        "cuda_version": str(torch.version.cuda or ""),
+        "mean_ms": mean_s * 1000,
+        "median_ms": median_s * 1000,
+        "stddev_ms": stdv_s * 1000,
+        "mem_peak_GiB": mem_peak_GiB,
     }
 
-    json_path = _TIME_PROFILE_DIR / f"{_args_info(args)}_{_TIME_INFO}_time.json"
-    json_path.write_text(
-        json.dumps(record, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+
+    with csv_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+        if write_header:
+            writer.writeheader()
+
+        writer.writerow(row)
 
     print("=" * 80)
-    print(f"time_profile: {json_path}")
+    print(f"time_profile: {csv_path}")
 
 
 def benchmark():
@@ -249,6 +288,7 @@ def benchmark():
     # warm-up：不记录时间，单独打 warmup 标签，方便在 nsys 里滤掉
     with _nvtx_range("warmup", args.annotate):
         for _ in range(args.warmup):
+            optimizer.zero_grad(set_to_none=True)
             _run_step(args, device, model, x, y, optimizer)
             _synchronize(device)
 
@@ -260,6 +300,7 @@ def benchmark():
     # 正式测量：benchmark 包住全部测量步，每个 step 再单独一个 range。
 
     if device.type == "cuda":
+        torch.cuda.reset_max_memory_allocated(device)
         torch.cuda.memory._record_memory_history(max_entries=1000000)
 
     print("=" * 80)
@@ -281,12 +322,15 @@ def benchmark():
 
             step_times.append(elapsed)
 
+    mem_peak = None
     if device.type == "cuda":
+        mem_peak = torch.cuda.max_memory_allocated(device) / 1024**3
+
         _save_mem_info(args)
 
         torch.cuda.memory._record_memory_history(enabled=None)
 
-    _save_time_info(args, device, step_times)
+    _save_time_info(args, device, step_times, mem_peak)
 
     print("=" * 80)
     print("Benchmark complete!")

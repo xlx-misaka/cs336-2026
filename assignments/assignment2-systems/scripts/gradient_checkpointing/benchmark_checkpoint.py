@@ -1,7 +1,12 @@
+import csv
+from pathlib import Path
+
 import torch
 
 from cs336_basics.model import RotaryEmbedding, TransformerBlock
 from torch.utils.checkpoint import checkpoint
+
+_OUTPUT_DIR = Path(__file__).resolve().parent
 
 d_model = 768
 d_ff = 3072
@@ -117,11 +122,65 @@ def benchmark(n, k):
     print(f"n = {n}, k = {k} :{mem / 1024**2:.2f} MiB")
     print("=" * 80)
 
+    return {"num_layers": n, "k": k, "peak_mem_MiB": mem / 1024**2, "saved_residual_MiB": total_size_bytes / 1024**2}
+
+
+def _save_results_csv(results):
+    res_path = _OUTPUT_DIR / "benchmark_checkpoint.csv"
+
+    with open(res_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+
+        writer.writerow(
+            [
+                "d_model",
+                "d_ff",
+                "num_heads",
+                "num_layers",
+                "context_length",
+                "batch_size",
+            ]
+        )
+        writer.writerow(
+            [
+                d_model,
+                d_ff,
+                num_heads,
+                num_layers,
+                context_length,
+                batch_size,
+            ]
+        )
+
+        writer.writerow([])
+
+        writer.writerow(
+            [
+                "k",
+                "peak_mem_MiB",
+                "saved_residual_MiB",
+            ]
+        )
+        for result in results:
+            writer.writerow(
+                [
+                    result["k"],
+                    result["peak_mem_MiB"],
+                    result["saved_residual_MiB"],
+                ]
+            )
+
+    print(f"Saved results to {res_path}")
+
 
 if __name__ == "__main__":
     if not torch.cuda.is_available():
         raise RuntimeError("需要 CUDA GPU 才能运行")
 
+    results = []
+
     for k in [0.5, 1, 2, 3]:
         total_size_bytes = 0
-        benchmark(n=num_layers, k=k)
+        results.append(benchmark(num_layers, k))
+
+    _save_results_csv(results)

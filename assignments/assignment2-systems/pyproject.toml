@@ -33,7 +33,7 @@ python-preference = "managed"
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+url = "https://mirror.sjtu.edu.cn/pytorch-wheels/cu130"
 explicit = true
 
 [tool.uv.sources]

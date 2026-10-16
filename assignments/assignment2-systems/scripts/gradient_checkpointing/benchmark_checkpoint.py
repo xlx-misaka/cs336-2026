@@ -8,10 +8,10 @@ from torch.utils.checkpoint import checkpoint
 
 _OUTPUT_DIR = Path(__file__).resolve().parent
 
-d_model = 768
-d_ff = 3072
-num_heads = 12
-num_layers = 12
+d_model = 1280
+d_ff = 5120
+num_heads = 20
+num_layers = 36
 
 context_length = 512
 batch_size = 4
@@ -178,7 +178,7 @@ if __name__ == "__main__":
 
     results = []
 
-    for k in [0.5, 1, 2, 3]:
+    for k in [0.5, 1, 2, 3, 4, 6]:
         total_size_bytes = 0
         results.append(benchmark(num_layers, k))
 

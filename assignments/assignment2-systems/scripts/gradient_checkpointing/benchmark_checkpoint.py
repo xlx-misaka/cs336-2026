@@ -8,33 +8,15 @@ from torch.utils.checkpoint import checkpoint
 
 _OUTPUT_DIR = Path(__file__).resolve().parent
 
-d_model = 1280
-d_ff = 5120
-num_heads = 20
-num_layers = 36
+d_model = 768
+d_ff = 3072
+num_heads = 12
+num_layers = 12
 
 context_length = 512
 batch_size = 4
 
-total_size_bytes = 0
-
 device = torch.device("cuda")
-
-
-def pack_hook(t):
-    if isinstance(t, torch.nn.Parameter):  # Skip logging parameters to avoid double counting
-        return t
-    global total_size_bytes
-    shape, dtype, grad_fn = t.shape, t.dtype, t.grad_fn
-    total_size_bytes += t.numel() * t.element_size()
-    # print(f"Saving residual: {shape=}, {dtype=}, {grad_fn=}")
-    return t
-
-
-def unpack_hook(t):
-    shape, dtype, grad_fn = t.shape, t.dtype, t.grad_fn
-    # print(f"Loading residual: {shape=}, {dtype=}, {grad_fn=}")
-    return t
 
 
 def k_blocks(blocks, x, i, k):
@@ -71,6 +53,7 @@ def run_model_checkpoint(blocks, x, n, k):
 
 
 def benchmark(n, k):
+    """Measure forward/backward peak allocation without saved-tensor hooks."""
 
     assert k == 0.5 or n % k == 0, "n 必须是 k 的倍数"
 
@@ -100,28 +83,30 @@ def benchmark(n, k):
         logits = run_model_checkpoint(blocks, x, n, k)
         assert logits is not None
         logits.mean().backward()
-        optim.zero_grad()
+        optim.zero_grad(set_to_none=True)
+        x.grad = None
         del logits
 
+    torch.cuda.synchronize(device)
+
+    torch.cuda.reset_peak_memory_stats(device)
+
+    logits = run_model_checkpoint(blocks, x, n, k)
+    assert logits is not None
+    logits.mean().backward()
+
+    torch.cuda.synchronize(device)
+
+    peak_mem_mib = torch.cuda.max_memory_allocated(device) / 1024**2
+
+    del logits
+    optim.zero_grad(set_to_none=True)
     x.grad = None
-    torch.cuda.synchronize()
-
-    torch.cuda.reset_peak_memory_stats()
-
-    with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
-        logits = run_model_checkpoint(blocks, x, n, k)
-        assert logits is not None
-        logits.mean().backward()
-
-    torch.cuda.synchronize()
-
-    mem = torch.cuda.max_memory_allocated()
 
     print("=" * 80)
-    print(f"Total saved residual memory: {total_size_bytes / 1024**2:.2f} MiB")
-    print(f"n = {n}, k = {k} :{mem / 1024**2:.2f} MiB")
+    print(f"n = {n}, k = {k}: {peak_mem_mib:.2f} MiB")
 
-    return {"num_layers": n, "k": k, "peak_mem_MiB": mem / 1024**2, "saved_residual_MiB": total_size_bytes / 1024**2}
+    return {"num_layers": n, "k": k, "peak_mem_MiB": peak_mem_mib}
 
 
 def _save_results_csv(results):
@@ -157,7 +142,6 @@ def _save_results_csv(results):
             [
                 "k",
                 "peak_mem_MiB",
-                "saved_residual_MiB",
             ]
         )
         for result in results:
@@ -165,7 +149,6 @@ def _save_results_csv(results):
                 [
                     result["k"],
                     result["peak_mem_MiB"],
-                    result["saved_residual_MiB"],
                 ]
             )
 
@@ -179,9 +162,11 @@ if __name__ == "__main__":
     results = []
 
     for k in [0.5, 1, 2, 3, 4, 6]:
-        total_size_bytes = 0
         results.append(benchmark(num_layers, k))
 
     _save_results_csv(results)
 
     print("=" * 80)
+
+
+# TODO: 还需租显卡完成xl配置，要求48GB

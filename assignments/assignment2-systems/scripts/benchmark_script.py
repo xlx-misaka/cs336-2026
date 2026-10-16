@@ -4,6 +4,7 @@ import csv
 import statistics
 import timeit
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import torch
 import torch.cuda.nvtx as nvtx
@@ -23,14 +24,18 @@ _MODEL_SIZES = {
     "10B": dict(d_model=4608, d_ff=12288, num_layers=50, num_heads=36),
 }
 
+_MEASUREMENT_SCOPES = {
+    "eval": "forward_no_grad",
+    "fwd": "forward_with_grad",
+    "bwd": "forward+loss+backward",
+    "train": "forward+loss+backward+optimizer_step",
+}
+
 _OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
 _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-_MEM_PROFILE_DIR = _OUTPUT_DIR / "mem"
+_MEM_PROFILE_DIR = _OUTPUT_DIR / "mem_use_history"
 _MEM_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-
-_TIME_PROFILE_DIR = _OUTPUT_DIR / "time"
-_TIME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
 _TIME_INFO = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -42,7 +47,10 @@ def _parse_args():
         "--mode",
         choices=["fwd", "bwd", "train", "eval"],
         default="eval",
-        help="Benchmark mode",
+        help=(
+            "eval: forward without gradients; fwd: forward with gradient recording; "
+            "bwd: forward + loss + backward; train: forward + loss + backward + optimizer step"
+        ),
     )
     parser.add_argument(
         "--model-size",
@@ -68,6 +76,11 @@ def _parse_args():
         help="emit NVTX ranges and swap in the annotated SDPA (use when profiling with nsys)",
     )
     parser.add_argument(
+        "--mem-snapshot",
+        action="store_true",
+        help="record a CUDA memory snapshot (adds profiling overhead to timings)",
+    )
+    parser.add_argument(
         "--mixed-precision",
         action="store_true",
         help="use mixed precision for the forward pass",
@@ -82,6 +95,9 @@ def _parse_args():
 
     if args.steps <= 0:
         raise ValueError("--steps must be positive")
+
+    if args.warmup < 1:
+        raise ValueError("--warmup must be at least 1")
 
     for key, value in _MODEL_SIZES[args.model_size].items():
         setattr(args, key, value)
@@ -180,26 +196,74 @@ def _run_step(args, device, model, x, y, optimizer):
         optimizer.step()
 
 
-def _save_mem_info(args):
+def _save_mem_history_info(args):
     # Save a pickle file to be loaded by PyTorch's online tool.
     snapshot_path = _MEM_PROFILE_DIR / f"{_args_info(args)}_{_TIME_INFO}_memory_snapshot.pickle"
 
     torch.cuda.memory._dump_snapshot(str(snapshot_path))
 
     print("=" * 80)
-    print(f"memory_profile: {snapshot_path}")
+    print(f"memory_used_history: {snapshot_path}")
 
 
-def _save_time_info(args, device, step_times, mem_peak_GiB):
+def _append_result_row(csv_path, fieldnames, row):
+    """Extend older CSV headers while preserving existing cells and unknown fields."""
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+
+    if not write_header:
+        with csv_path.open("r", newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            existing_fields = reader.fieldnames
+            if not existing_fields:
+                raise ValueError(f"CSV has no readable header: {csv_path}")
+
+            if set(fieldnames).issubset(existing_fields):
+                fieldnames = existing_fields
+                existing_rows = None
+            else:
+                existing_rows = list(reader)
+
+        if existing_rows is not None:
+            if any(None in existing_row for existing_row in existing_rows):
+                raise ValueError(f"CSV contains rows wider than its header: {csv_path}")
+
+            fieldnames = list(fieldnames) + [name for name in existing_fields if name not in fieldnames]
+            temp_path = None
+            try:
+                with NamedTemporaryFile(
+                    mode="w", newline="", encoding="utf-8", dir=csv_path.parent,
+                    prefix=f"{csv_path.stem}_", suffix=".tmp", delete=False,
+                ) as f:
+                    temp_path = Path(f.name)
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(existing_rows)
+                    writer.writerow(row)
+
+                temp_path.replace(csv_path)
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+            return
+
+    with csv_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def _save_results_csv(args, device, step_times, mem_peak_GiB):
     mean_s = statistics.mean(step_times)
     median_s = statistics.median(step_times)
     stdv_s = statistics.stdev(step_times) if len(step_times) > 1 else 0.0
 
-    csv_path = _TIME_PROFILE_DIR / "benchmark_results.csv"
+    csv_path = _OUTPUT_DIR / "benchmark_results.csv"
 
     fieldnames = [
         "timestamp",
         "mode",
+        "measurement_scope",
         "model_size",
         "d_model",
         "d_ff",
@@ -208,8 +272,13 @@ def _save_time_info(args, device, step_times, mem_peak_GiB):
         "context_length",
         "batch_size",
         "vocab_size",
+        "rope_theta",
+        "lr",
+        "seed",
         "mixed_precision",
         "compile",
+        "mem_snapshot",
+        "annotate",
         "warmup",
         "steps",
         "device",
@@ -225,6 +294,7 @@ def _save_time_info(args, device, step_times, mem_peak_GiB):
     row = {
         "timestamp": _TIME_INFO,
         "mode": args.mode,
+        "measurement_scope": _MEASUREMENT_SCOPES[args.mode],
         "model_size": args.model_size,
         "d_model": args.d_model,
         "d_ff": args.d_ff,
@@ -233,8 +303,13 @@ def _save_time_info(args, device, step_times, mem_peak_GiB):
         "context_length": args.context_length,
         "batch_size": args.batch_size,
         "vocab_size": args.vocab_size,
+        "rope_theta": args.rope_theta,
+        "lr": args.lr,
+        "seed": args.seed,
         "mixed_precision": args.mixed_precision,
         "compile": args.compile,
+        "mem_snapshot": args.mem_snapshot,
+        "annotate": args.annotate,
         "warmup": args.warmup,
         "steps": args.steps,
         "device": str(device),
@@ -247,18 +322,10 @@ def _save_time_info(args, device, step_times, mem_peak_GiB):
         "mem_peak_GiB": mem_peak_GiB,
     }
 
-    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
-
-    with csv_path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-
-        if write_header:
-            writer.writeheader()
-
-        writer.writerow(row)
+    _append_result_row(csv_path, fieldnames, row)
 
     print("=" * 80)
-    print(f"time_profile: {csv_path}")
+    print(f"results saved: {csv_path}")
 
 
 def benchmark():
@@ -301,10 +368,12 @@ def benchmark():
 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-        torch.cuda.memory._record_memory_history(max_entries=1000000)
+
+        if args.mem_snapshot:
+            torch.cuda.memory._record_memory_history(max_entries=1000000)
 
     print("=" * 80)
-    print("Benchmark start!")
+    print(f"Benchmark start! mode={args.mode}, scope={_MEASUREMENT_SCOPES[args.mode]}")
 
     with _nvtx_range("benchmark", args.annotate):
         for _ in range(args.steps):
@@ -326,11 +395,11 @@ def benchmark():
     if device.type == "cuda":
         mem_peak_gib = torch.cuda.max_memory_allocated(device) / 1024**3
 
-        _save_mem_info(args)
+        if args.mem_snapshot:
+            _save_mem_history_info(args)
+            torch.cuda.memory._record_memory_history(enabled=None)
 
-        torch.cuda.memory._record_memory_history(enabled=None)
-
-    _save_time_info(args, device, step_times, mem_peak_gib)
+    _save_results_csv(args, device, step_times, mem_peak_gib)
 
     print("=" * 80)
     print("Benchmark complete!")

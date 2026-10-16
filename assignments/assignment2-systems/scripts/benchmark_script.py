@@ -322,15 +322,15 @@ def benchmark():
 
             step_times.append(elapsed)
 
-    mem_peak = None
+    mem_peak_gib = None
     if device.type == "cuda":
-        mem_peak = torch.cuda.max_memory_allocated(device) / 1024**3
+        mem_peak_gib = torch.cuda.max_memory_allocated(device) / 1024**3
 
         _save_mem_info(args)
 
         torch.cuda.memory._record_memory_history(enabled=None)
 
-    _save_time_info(args, device, step_times, mem_peak)
+    _save_time_info(args, device, step_times, mem_peak_gib)
 
     print("=" * 80)
     print("Benchmark complete!")

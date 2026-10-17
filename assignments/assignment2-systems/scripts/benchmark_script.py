@@ -47,10 +47,7 @@ def _parse_args():
         "--mode",
         choices=["fwd", "bwd", "train", "eval"],
         default="eval",
-        help=(
-            "eval: forward without gradients; fwd: forward with gradient recording; "
-            "bwd: forward + loss + backward; train: forward + loss + backward + optimizer step"
-        ),
+        help=("eval: forward without gradients; fwd: forward with gradient recording; bwd: forward + loss + backward; train: forward + loss + backward + optimizer step"),
     )
     parser.add_argument(
         "--model-size",
@@ -231,8 +228,13 @@ def _append_result_row(csv_path, fieldnames, row):
             temp_path = None
             try:
                 with NamedTemporaryFile(
-                    mode="w", newline="", encoding="utf-8", dir=csv_path.parent,
-                    prefix=f"{csv_path.stem}_", suffix=".tmp", delete=False,
+                    mode="w",
+                    newline="",
+                    encoding="utf-8",
+                    dir=csv_path.parent,
+                    prefix=f"{csv_path.stem}_",
+                    suffix=".tmp",
+                    delete=False,
                 ) as f:
                     temp_path = Path(f.name)
                     writer = csv.DictWriter(f, fieldnames=fieldnames)

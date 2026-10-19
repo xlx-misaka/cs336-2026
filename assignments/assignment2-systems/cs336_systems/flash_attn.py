@@ -1,6 +1,8 @@
 from math import ceil, sqrt
 
 import torch
+import triton
+from triton import language as tl
 
 B_q = 16
 B_k = 16

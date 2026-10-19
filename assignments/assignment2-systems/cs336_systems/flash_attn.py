@@ -172,6 +172,16 @@ class FlashAttention(torch.autograd.Function):
 
                 # 2. S = Q @ K^T / sqrt(d)
                 S[..., i * B_q : min((i + 1) * B_q, N_q), j * B_k : min((j + 1) * B_k, N_k)] = Q_block @ K_block.transpose(-2, -1) / sqrt(d)
+
+                # mask S
+                if is_causal:
+                    q_pos = num_query_row_tiles * B_q + torch.arange(0, B_q, device=Q.device)
+                    k_pos = num_key_row_tiles * B_k + torch.arange(0, B_k, device=Q.device)
+                    mask = q_pos[:, None] >= k_pos[None, :]
+                    S[..., i * B_q : min((i + 1) * B_q, N_q), j * B_k : min((j + 1) * B_k, N_k)] = torch.where(
+                        mask, S[..., i * B_q : min((i + 1) * B_q, N_q), j * B_k : min((j + 1) * B_k, N_k)], float("-inf")
+                    )
+
                 S_block = S[..., i * B_q : min((i + 1) * B_q, N_q), j * B_k : min((j + 1) * B_k, N_k)]  # ..., B_q, B_k
 
                 # 3. m_j = max(rowmax(S), m_{j-1})

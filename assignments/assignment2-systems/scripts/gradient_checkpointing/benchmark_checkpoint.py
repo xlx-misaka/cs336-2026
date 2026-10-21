@@ -7,10 +7,12 @@ from torch.utils.checkpoint import checkpoint
 
 _OUTPUT_DIR = Path(__file__).resolve().parent
 
-d_model = 768
-d_ff = 3072
-num_heads = 12
-num_layers = 12
+model_size = {"d_model": 2560, "d_ff": 10240, "num_layers": 32, "num_heads": 32}
+
+d_model = model_size["d_model"]
+d_ff = model_size["d_ff"]
+num_layers = model_size["num_layers"]
+num_heads = model_size["num_heads"]
 
 context_length = 512
 batch_size = 4
@@ -165,6 +167,3 @@ if __name__ == "__main__":
     _save_results_csv(results)
 
     print("=" * 80)
-
-
-# TODO: 还需租显卡完成xl配置，要求48GB

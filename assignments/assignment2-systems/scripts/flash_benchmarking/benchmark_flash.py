@@ -23,7 +23,7 @@ def benchmark(mode, sequence_length, d_model, dtype):
         mask = i[:, None] >= j[None, :]
         attn = lambda Q, K, V: scaled_dot_product_attention(Q, K, V, mask)
     else:
-        attn = lambda Q, K, V: TritonFlashAttention.apply(Q, K, V, is_causal=True)
+        attn = lambda Q, K, V: TritonFlashAttention.apply(Q, K, V, True)
 
     O = attn(Q, K, V)
 

@@ -13,7 +13,7 @@ def get_flashattention_autograd_function_pytorch() -> type:
         A class object (not an instance of the class)
     """
     # For example: return MyFlashAttnAutogradFunctionClass
-    return flash_attn.FlashAttention
+    return flash_attn.TorchFlashAttention
 
 
 def get_flashattention_autograd_function_triton() -> type:

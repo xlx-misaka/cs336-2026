@@ -18,9 +18,12 @@ def benchmark(mode, sequence_length, d_model, dtype):
 
     attn = None
     if mode == "pytorch":
-        attn = scaled_dot_product_attention
+        i = torch.arange(sequence_length, device="cuda")
+        j = torch.arange(sequence_length, device="cuda")
+        mask = i[:, None] >= j[None, :]
+        attn = lambda Q, K, V: scaled_dot_product_attention(Q, K, V, mask)
     else:
-        attn = TritonFlashAttention.apply
+        attn = lambda Q, K, V: TritonFlashAttention.apply(Q, K, V, is_causal=True)
 
     O = attn(Q, K, V)
 
@@ -72,7 +75,7 @@ def _save_results_csv(results):
     print(f"Saved results to {res_path}")
 
 
-if __name__ == "__main__"():
+if __name__ == "__main__":
     assert torch.cuda.is_available(), "CUDA is not available"
 
     results = []

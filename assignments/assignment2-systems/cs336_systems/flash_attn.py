@@ -338,13 +338,13 @@ def flash_bwd_kernel_KV(
             mask &= q_pos[:, None] >= k_pos[None, :]
         S_block = tl.where(mask, S_block, float("-inf"))
 
-        P_block = tl.exp(S_block - L_block[:None])
+        P_block = tl.exp(S_block - L_block[:, None])
 
         dV_block = tl.dot(P_block.T, dO_block, acc=dV_block)
 
         dP_block = tl.dot(dO_block, V_block.T)
 
-        dS_block = P_block * (dP_block - D_block[:None])
+        dS_block = P_block * (dP_block - D_block[:, None])
 
         dK_block = tl.dot(dS_block.T, Q_block * scale, acc=dK_block)
 
@@ -485,11 +485,11 @@ def flash_bwd_kernel_Q(
             mask &= q_pos[:, None] >= k_pos[None, :]
         S_block = tl.where(mask, S_block, float("-inf"))
 
-        P_block = tl.exp(S_block - L_block[:None])
+        P_block = tl.exp(S_block - L_block[:, None])
 
         dP_block = tl.dot(dO_block, V_block.T)
 
-        dS_block = P_block * (dP_block - D_block[:None])
+        dS_block = P_block * (dP_block - D_block[:, None])
 
         dQ_block = tl.dot(dS_block, K_block * scale, acc=dQ_block)
 
@@ -658,6 +658,7 @@ class TritonFlashAttention(torch.autograd.Function):
         ctx.DIM = DIM
         ctx.Q_TILE_SIZE = Q_TILE_SIZE
         ctx.K_TILE_SIZE = K_TILE_SIZE
+        ctx.scale = scale
         ctx.is_causal = is_causal
 
         flash_fwd_kernel[triton.cdiv(N_QURIES, Q_TILE_SIZE), BATCH_SIZE](
@@ -713,7 +714,7 @@ class TritonFlashAttention(torch.autograd.Function):
         scale = ctx.scale
         is_causal = ctx.is_causal
 
-        D = torch.zeros(N_QURIES, device=Q.device, dtype=dO.dtype)
+        D = torch.zeros(BATCH_SIZE, N_QURIES, device=Q.device, dtype=dO.dtype)
 
         flash_bwd_kernel_D[T_q, BATCH_SIZE](
             O,
@@ -732,8 +733,8 @@ class TritonFlashAttention(torch.autograd.Function):
             Q_TILE_SIZE,
         )
 
-        dK = torch.zeros((BATCH_SIZE, N_KEYS, DIM), device=Q.device, dtype=dO.dtype)
-        dV = torch.zeros((BATCH_SIZE, N_KEYS, DIM), device=Q.device, dtype=dO.dtype)
+        dK = torch.zeros(BATCH_SIZE, N_KEYS, DIM, device=Q.device, dtype=dO.dtype)
+        dV = torch.zeros(BATCH_SIZE, N_KEYS, DIM, device=Q.device, dtype=dO.dtype)
 
         flash_bwd_kernel_KV[T_k, BATCH_SIZE](
             Q,
@@ -775,7 +776,7 @@ class TritonFlashAttention(torch.autograd.Function):
             is_causal,
         )
 
-        dQ = torch.zeros((BATCH_SIZE, N_QURIES, DIM), device=Q.device, dtype=dO.dtype)
+        dQ = torch.zeros(BATCH_SIZE, N_QURIES, DIM, device=Q.device, dtype=dO.dtype)
 
         flash_bwd_kernel_Q[T_q, BATCH_SIZE](
             Q,

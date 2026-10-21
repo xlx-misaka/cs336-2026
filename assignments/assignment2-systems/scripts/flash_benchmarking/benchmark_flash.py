@@ -53,7 +53,7 @@ def benchmark(mode, sequence_length, d_model, dtype):
 
 
 def _save_results_csv(results):
-    res_path = _OUTPUT_DIR / "benchmark_flash.csv"
+    res_path = _OUTPUT_DIR / f"{torch.cuda.get_device_name()}_benchmark_flash.csv"
 
     filednames = [
         "mode",

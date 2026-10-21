@@ -109,7 +109,7 @@ def benchmark(n, k):
 
 
 def _save_results_csv(results):
-    res_path = _OUTPUT_DIR / "benchmark_checkpoint.csv"
+    res_path = _OUTPUT_DIR / f"{torch.cuda.get_device_name()}_benchmark_checkpoint.csv"
 
     with open(res_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)

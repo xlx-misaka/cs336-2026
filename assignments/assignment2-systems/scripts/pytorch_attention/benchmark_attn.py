@@ -1,13 +1,12 @@
 import argparse
 import csv
 import gc
-from pathlib import Path
 import statistics
 import timeit
+from pathlib import Path
 
-from cs336_basics import model
 import torch
-
+from cs336_basics import model
 
 _OUTPUT_DIR = Path(__file__).resolve().parent
 
@@ -28,10 +27,11 @@ def _parse_args():
     return args
 
 
-def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"), torch_compile=False):
+def benchmark(d_model, context_length, batch_size=8, torch_compile=False):
 
-    if device.type == "cpu":
-        raise ValueError("CPU not supported")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    assert device == "cuda"
 
     Q = torch.randn(batch_size, context_length, d_model, requires_grad=True, device=device)
     K = torch.randn(batch_size, context_length, d_model, requires_grad=True, device=device)
@@ -50,7 +50,7 @@ def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" 
 
     warmup_iter = 5
     for _ in range(warmup_iter):
-        O = run_forward(Q, K, V, mask)  # noqa: E741
+        O = run_forward(Q, K, V, mask)
 
         O.sum().backward()
 
@@ -72,7 +72,7 @@ def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" 
 
         start = timeit.default_timer()
 
-        O = run_forward(Q, K, V, mask)  # noqa: E741
+        O = run_forward(Q, K, V, mask)
 
         torch.cuda.synchronize()
 
@@ -146,7 +146,7 @@ def _save_results_csv(results, torch_compile=False):
         "status",
     ]
 
-    res_path = _OUTPUT_DIR / ("benchmark_attn.csv" if not torch_compile else "benchmark_attn_compile.csv")
+    res_path = _OUTPUT_DIR / (f"{torch.cuda.get_device_name()}_benchmark_attn.csv" if not torch_compile else f"{torch.cuda.get_device_name()}_benchmark_attn_compile.csv")
 
     with open(res_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)

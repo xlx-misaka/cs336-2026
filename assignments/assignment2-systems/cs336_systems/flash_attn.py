@@ -453,7 +453,7 @@ def flash_bwd_kernel_Q(
 
     dQ_block_ptr = tl.make_block_ptr(
         dQ_ptr + batch_index * stride_dqb,
-        shape=(N_KEYS, DIM),
+        shape=(N_QUERIES, DIM),
         strides=(stride_dqk, stride_dqd),
         offsets=(query_tile_index * Q_TILE_SIZE, 0),
         block_shape=(Q_TILE_SIZE, DIM),
@@ -467,7 +467,7 @@ def flash_bwd_kernel_Q(
 
     dQ_block = tl.zeros((Q_TILE_SIZE, DIM), dtype=tl.float32)
 
-    for key_tile_index in range(tl.cdiv(N_QUERIES, Q_TILE_SIZE)):
+    for key_tile_index in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
         K_block = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
         V_block = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
 

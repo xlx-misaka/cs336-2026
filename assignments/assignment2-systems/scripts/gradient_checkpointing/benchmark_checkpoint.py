@@ -52,7 +52,6 @@ def run_model_checkpoint(blocks, x, n, k):
 
 
 def benchmark(n, k):
-    """Measure forward/backward peak allocation without saved-tensor hooks."""
 
     assert k == 0.5 or n % k == 0, "n 必须是 k 的倍数"
 

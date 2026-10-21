@@ -25,7 +25,7 @@ def benchmark(mode, sequence_length, d_model, dtype):
     else:
         attn = lambda Q, K, V: TritonFlashAttention.apply(Q, K, V, True)  # noqa: E731
 
-    O = attn(Q, K, V)
+    O = attn(Q, K, V)  # noqa: E741
 
     def run_fwd():
         attn(Q, K, V)

@@ -21,9 +21,9 @@ def benchmark(mode, sequence_length, d_model, dtype):
         i = torch.arange(sequence_length, device="cuda")
         j = torch.arange(sequence_length, device="cuda")
         mask = i[:, None] >= j[None, :]
-        attn = lambda Q, K, V: scaled_dot_product_attention(Q, K, V, mask)
+        attn = lambda Q, K, V: scaled_dot_product_attention(Q, K, V, mask)  # noqa: E731
     else:
-        attn = lambda Q, K, V: TritonFlashAttention.apply(Q, K, V, True)
+        attn = lambda Q, K, V: TritonFlashAttention.apply(Q, K, V, True)  # noqa: E731
 
     O = attn(Q, K, V)
 

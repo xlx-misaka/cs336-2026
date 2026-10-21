@@ -1,9 +1,9 @@
 import math
 
-from einops import einsum
 import torch
-import torch.cuda.nvtx as nvtx
 from cs336_basics.nn_utils import softmax
+from einops import einsum
+from torch.cuda import nvtx
 
 
 @nvtx.range("scaled dot product attention")

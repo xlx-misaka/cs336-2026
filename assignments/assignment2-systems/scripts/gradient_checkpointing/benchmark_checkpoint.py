@@ -2,7 +2,6 @@ import csv
 from pathlib import Path
 
 import torch
-
 from cs336_basics.model import RotaryEmbedding, TransformerBlock
 from torch.utils.checkpoint import checkpoint
 

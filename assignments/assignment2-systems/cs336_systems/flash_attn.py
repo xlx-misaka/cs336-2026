@@ -1,4 +1,5 @@
 from math import ceil, sqrt
+
 import torch
 import triton
 from triton import language as tl
@@ -139,7 +140,7 @@ def flash_fwd_kernel(
     tl.store(L_block_ptr, (tl.log(L_block) + m).to(L_block_ptr.type.element_ty), boundary_check=(0,))
 
 
-def flash_bwd_torch(Q, K, V, O, dO, L, is_causal=False):  # noqa: E741
+def flash_bwd_torch(Q, K, V, O, dO, L, is_causal=False):
     N_q = Q.shape[-2]
     N_k = K.shape[-2]
     d = Q.shape[-1]
@@ -206,7 +207,7 @@ class FlashAttention(torch.autograd.Function):
         num_query_row_tiles = ceil(N_q / B_q)
         num_key_row_tiles = ceil(N_k / B_k)
 
-        O = torch.zeros_like(Q, dtype=torch.float32)  # ..., N_q, d  # noqa: E741
+        O = torch.zeros_like(Q, dtype=torch.float32)  # ..., N_q, d
         L = torch.zeros(Q.shape[:-1], device=Q.device, dtype=torch.float32)  # ..., N_q
 
         ctx.d = d
@@ -269,7 +270,7 @@ class FlashAttention(torch.autograd.Function):
     def backward(ctx, *grad_outputs):
         dO = grad_outputs[0]
 
-        L, Q, K, V, O = ctx.saved_tensors  # noqa: E741
+        L, Q, K, V, O = ctx.saved_tensors
 
         return flash_bwd_torch(Q, K, V, O, dO, L, ctx.is_causal)
 
@@ -292,7 +293,7 @@ class TritonFlashAttention(torch.autograd.Function):
         assert N_QURIES >= Q_TILE_SIZE
         assert N_KEYS >= K_TILE_SIZE
 
-        O = torch.zeros_like(Q)  # noqa: E741
+        O = torch.zeros_like(Q)
         L = torch.zeros(Q.shape[:-1], device=Q.device, dtype=torch.float32)
 
         ctx.D = D
@@ -337,7 +338,7 @@ class TritonFlashAttention(torch.autograd.Function):
     def backward(ctx, *grad_outputs):
         dO = grad_outputs[0]
 
-        L, Q, K, V, O = ctx.saved_tensors  # noqa: E741
+        L, Q, K, V, O = ctx.saved_tensors
 
         flash_bwd_kernel = torch.compile(flash_bwd_torch)
 

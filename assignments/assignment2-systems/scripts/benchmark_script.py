@@ -3,25 +3,23 @@ import contextlib
 import csv
 import statistics
 import timeit
+from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import torch
-import torch.cuda.nvtx as nvtx
 import torch.nn.functional as F
-
-from datetime import datetime
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import AdamW
-
+from torch.cuda import nvtx
 
 # Table 1 of the assignment handout.
 _MODEL_SIZES = {
-    "small": dict(d_model=768, d_ff=3072, num_layers=12, num_heads=12),
-    "medium": dict(d_model=1024, d_ff=4096, num_layers=24, num_heads=16),
-    "large": dict(d_model=1280, d_ff=5120, num_layers=36, num_heads=20),
-    "xl": dict(d_model=2560, d_ff=10240, num_layers=32, num_heads=32),
-    "10B": dict(d_model=4608, d_ff=12288, num_layers=50, num_heads=36),
+    "small": {"d_model": 768, "d_ff": 3072, "num_layers": 12, "num_heads": 12},
+    "medium": {"d_model": 1024, "d_ff": 4096, "num_layers": 24, "num_heads": 16},
+    "large": {"d_model": 1280, "d_ff": 5120, "num_layers": 36, "num_heads": 20},
+    "xl": {"d_model": 2560, "d_ff": 10240, "num_layers": 32, "num_heads": 32},
+    "10B": {"d_model": 4608, "d_ff": 12288, "num_layers": 50, "num_heads": 36},
 }
 
 _MEASUREMENT_SCOPES = {
@@ -144,6 +142,7 @@ def _build_model(args, device):
 
 def _annotate_units():
     import cs336_basics.model
+
     from scripts.annotated_units import annotated_scaled_dot_product_attention
 
     cs336_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention

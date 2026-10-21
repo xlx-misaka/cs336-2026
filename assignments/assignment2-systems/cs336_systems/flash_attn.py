@@ -192,7 +192,7 @@ def flash_bwd_kernel_D(
     dO_block = tl.load(dO_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
     # D =  rowsum(O * dO)
-    D_block = tl.sum(O_block * dO_block, axis=-1, dtype=tl.float32)
+    D_block = tl.sum(O_block.to(tl.float32) * dO_block, axis=-1)
 
     tl.store(D_block_ptr, D_block.to(D_block_ptr.type.element_ty), boundary_check=(0,))
 
@@ -340,13 +340,13 @@ def flash_bwd_kernel_KV(
 
         P_block = tl.exp(S_block - L_block[:, None])
 
-        dV_block = tl.dot(P_block.T.to(dO_block.dtype), dO_block.to(P_block.dtype), acc=dV_block)
+        dV_block = tl.dot(P_block.T, dO_block.to(P_block.dtype), acc=dV_block)
 
         dP_block = tl.dot(dO_block, V_block.T)
 
         dS_block = P_block * (dP_block - D_block[:, None])
 
-        dK_block = tl.dot(dS_block.T.to(dO_block.dtype), Q_block * scale.to(dS_block.dtype), acc=dK_block)
+        dK_block = tl.dot(dS_block.T, Q_block * scale.to(dS_block.dtype), acc=dK_block)
 
         Q_block_ptr = Q_block_ptr.advance((Q_TILE_SIZE, 0))
         dO_block_ptr = dO_block_ptr.advance((Q_TILE_SIZE, 0))
@@ -491,7 +491,7 @@ def flash_bwd_kernel_Q(
 
         dS_block = P_block * (dP_block - D_block[:, None])
 
-        dQ_block = tl.dot(dS_block.to(dO_block.dtype), K_block * scale.to(dS_block.dtype), acc=dQ_block)
+        dQ_block = tl.dot(dS_block, K_block * scale.to(dS_block.dtype), acc=dQ_block)
 
         K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
         V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
@@ -714,7 +714,7 @@ class TritonFlashAttention(torch.autograd.Function):
         scale = ctx.scale
         is_causal = ctx.is_causal
 
-        D = torch.zeros(BATCH_SIZE, N_QURIES, device=Q.device, dtype=dO.dtype)
+        D = torch.zeros(BATCH_SIZE, N_QURIES, device=Q.device, dtype=torch.float32)
 
         flash_bwd_kernel_D[T_q, BATCH_SIZE](
             O,

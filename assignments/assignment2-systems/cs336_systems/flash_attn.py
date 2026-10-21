@@ -508,7 +508,7 @@ def flash_bwd_torch(Q, K, V, O, dO, L, is_causal=False):
     dV = torch.zeros_like(V, dtype=torch.float32)
     dK = torch.zeros_like(K, dtype=torch.float32)
 
-    D = (O * dO).sum(dim=-1)
+    D = (O.to(torch.float32) * dO.to(torch.float32)).sum(dim=-1)
 
     assert N_q >= B_q and N_k >= B_k
 
@@ -521,7 +521,7 @@ def flash_bwd_torch(Q, K, V, O, dO, L, is_causal=False):
             ed_kb = min((key_block_index + 1) * B_k, N_k)
 
             # S = Q @ K^T / sqrt(d)
-            S_block = Q[..., st_qb:ed_qb, :] @ K[..., st_kb:ed_kb, :].transpose(-2, -1) * d**-0.5
+            S_block = Q[..., st_qb:ed_qb, :].to(torch.float32) @ K[..., st_kb:ed_kb, :].to(torch.float32).transpose(-2, -1) * d**-0.5
 
             # mask S
             if is_causal:
@@ -534,10 +534,10 @@ def flash_bwd_torch(Q, K, V, O, dO, L, is_causal=False):
             P_block = (S_block - L[..., st_qb:ed_qb, None]).exp()
 
             # dV = P^T @ dO
-            dV[..., st_kb:ed_kb, :] += P_block.transpose(-2, -1).to(dO.dtype) @ dO[..., st_qb:ed_qb, :]
+            dV[..., st_kb:ed_kb, :] += P_block.transpose(-2, -1) @ dO[..., st_qb:ed_qb, :].to(torch.float32)
 
             # dP = dO @ V^T
-            dP_block = dO[..., st_qb:ed_qb, :] @ V[..., st_kb:ed_kb, :].transpose(-2, -1).to(dO.dtype)
+            dP_block = dO[..., st_qb:ed_qb, :].to(torch.float32) @ V[..., st_kb:ed_kb, :].to(torch.float32).transpose(-2, -1)
 
             # dS = P * (dP - D)
             dS_block = P_block * (dP_block - D[..., st_qb:ed_qb, None])

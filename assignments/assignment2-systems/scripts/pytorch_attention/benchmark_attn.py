@@ -50,7 +50,7 @@ def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" 
 
     warmup_iter = 5
     for _ in range(warmup_iter):
-        O = run_forward(Q, K, V, mask)
+        O = run_forward(Q, K, V, mask)  # noqa: E741
 
         O.sum().backward()
 
@@ -72,7 +72,7 @@ def benchmark(d_model, context_length, batch_size=8, device=torch.device("cuda" 
 
         start = timeit.default_timer()
 
-        O = run_forward(Q, K, V, mask)
+        O = run_forward(Q, K, V, mask)  # noqa: E741
 
         torch.cuda.synchronize()
 

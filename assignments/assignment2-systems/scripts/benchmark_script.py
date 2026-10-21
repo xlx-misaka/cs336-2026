@@ -1,11 +1,13 @@
 import argparse
 import contextlib
 import csv
+import math
 import statistics
-import timeit
+import time
 from datetime import datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from unittest.mock import patch
 
 import torch
 import torch.nn.functional as F
@@ -13,7 +15,6 @@ from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import AdamW
 from torch.cuda import nvtx
 
-# Table 1 of the assignment handout.
 _MODEL_SIZES = {
     "small": {"d_model": 768, "d_ff": 3072, "num_layers": 12, "num_heads": 12},
     "medium": {"d_model": 1024, "d_ff": 4096, "num_layers": 24, "num_heads": 16},
@@ -30,16 +31,32 @@ _MEASUREMENT_SCOPES = {
 }
 
 _OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
-_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
 _MEM_PROFILE_DIR = _OUTPUT_DIR / "mem_use_history"
-_MEM_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
-_TIME_INFO = datetime.now().strftime("%Y%m%d_%H%M%S")
+_CONFIG_FIELDS = (
+    "mode",
+    "model_size",
+    "d_model",
+    "d_ff",
+    "num_layers",
+    "num_heads",
+    "context_length",
+    "batch_size",
+    "vocab_size",
+    "rope_theta",
+    "lr",
+    "seed",
+    "mixed_precision",
+    "compile",
+    "mem_snapshot",
+    "annotate",
+    "warmup",
+    "steps",
+)
 
 
-def _parse_args():
-    parser = argparse.ArgumentParser()
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Benchmark transformer latency and peak allocated CUDA memory.")
 
     parser.add_argument(
         "--mode",
@@ -64,6 +81,7 @@ def _parse_args():
     parser.add_argument(
         "--device",
         default="cuda" if torch.cuda.is_available() else "cpu",
+        help="cpu, cuda, or cuda:N",
     )
     parser.add_argument(
         "--annotate",
@@ -86,13 +104,33 @@ def _parse_args():
         help="use torch.compile",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    if args.steps <= 0:
-        raise ValueError("--steps must be positive")
+    for name in ("steps", "vocab_size", "context_length", "batch_size"):
+        if getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
 
     if args.warmup < 1:
-        raise ValueError("--warmup must be at least 1")
+        parser.error("--warmup must be at least 1")
+
+    if not math.isfinite(args.lr) or args.lr < 0:
+        parser.error("--lr must be finite and nonnegative")
+    if not math.isfinite(args.rope_theta) or args.rope_theta <= 0:
+        parser.error("--rope-theta must be finite and positive")
+
+    try:
+        device = torch.device(args.device)
+    except (RuntimeError, ValueError) as exc:
+        parser.error(str(exc))
+    if device.type not in {"cpu", "cuda"}:
+        parser.error("--device must be cpu, cuda, or cuda:N")
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            parser.error("CUDA is not available")
+        if device.index is not None and device.index >= torch.cuda.device_count():
+            parser.error(f"CUDA device {device.index} does not exist")
+    elif args.annotate or args.mem_snapshot:
+        parser.error("--annotate and --mem-snapshot require a CUDA device")
 
     for key, value in _MODEL_SIZES[args.model_size].items():
         setattr(args, key, value)
@@ -103,7 +141,7 @@ def _parse_args():
 def _args_info(args) -> str:
     """Return a filesystem-safe summary of the essential benchmark arguments."""
     precision = "bf16" if args.mixed_precision else "fp32"
-    compile = "compiled" if args.compile else "uncompiled"
+    execution = "compiled" if args.compile else "uncompiled"
     return "_".join(
         str(value)
         for value in (
@@ -111,7 +149,7 @@ def _args_info(args) -> str:
             args.model_size,
             args.context_length,
             precision,
-            compile,
+            execution,
         )
     )
 
@@ -126,7 +164,7 @@ def _nvtx_range(name, enabled):
     return nvtx.range(name) if enabled else contextlib.nullcontext()
 
 
-def _build_model(args, device):
+def _build_model(args, device) -> BasicsTransformerLM:
     model = BasicsTransformerLM(
         vocab_size=args.vocab_size,
         context_length=args.context_length,
@@ -140,16 +178,23 @@ def _build_model(args, device):
     return model
 
 
-def _annotate_units():
+@contextlib.contextmanager
+def _annotated_attention(enabled):
+    """Temporarily annotate SDPA without changing later runs in this process."""
+    if not enabled:
+        yield
+        return
+
     import cs336_basics.model
 
     from scripts.annotated_units import annotated_scaled_dot_product_attention
 
-    cs336_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
+    with patch.object(cs336_basics.model, "scaled_dot_product_attention", annotated_scaled_dot_product_attention):
+        yield
 
 
 def _make_batch(args, device):
-    # batch 生成不计入计时，因此只生成一次并复用
+    # Generate inputs once, outside warmup and measurement.
     x = torch.randint(
         0,
         args.vocab_size,
@@ -166,44 +211,48 @@ def _make_batch(args, device):
 
 
 def _run_step(args, device, model, x, y, optimizer):
+    """Execute the selected scope; gradient clearing stays outside the timer."""
+    with torch.set_grad_enabled(args.mode != "eval"):
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=args.mixed_precision):
+            with _nvtx_range("forward", args.annotate):
+                logits = model(x)
 
-    cast_ctx = torch.autocast(device_type=device.type, dtype=torch.bfloat16) if args.mixed_precision else contextlib.nullcontext()
-    grad_ctx = torch.no_grad() if args.mode == "eval" else contextlib.nullcontext()
+            if args.mode in {"fwd", "eval"}:
+                return
 
-    with _nvtx_range("forward", args.annotate), cast_ctx, grad_ctx:
-        logits = model(x)
+            with _nvtx_range("loss", args.annotate):
+                loss = F.cross_entropy(logits.reshape(-1, args.vocab_size), y.reshape(-1))
 
-    if args.mode == "fwd" or args.mode == "eval":
+        with _nvtx_range("backward", args.annotate):
+            loss.backward()
+
+        if args.mode == "train":
+            with _nvtx_range("optimizer", args.annotate):
+                optimizer.step()
+
+
+@contextlib.contextmanager
+def _memory_history(snapshot_path):
+    """Save profiling data and stop recording even when measurement fails."""
+    if snapshot_path is None:
+        yield
         return
 
-    with _nvtx_range("loss", args.annotate), cast_ctx:
-        loss = F.cross_entropy(
-            logits.reshape(-1, args.vocab_size),
-            y.reshape(-1),
-        )
-
-    with _nvtx_range("backward", args.annotate):
-        loss.backward()
-
-    if args.mode == "bwd":
-        return
-
-    with _nvtx_range("optimizer", args.annotate):
-        optimizer.step()
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.cuda.memory._record_memory_history(max_entries=1_000_000)
+    try:
+        yield
+    finally:
+        try:
+            torch.cuda.memory._dump_snapshot(str(snapshot_path))
+        finally:
+            torch.cuda.memory._record_memory_history(enabled=None)
 
 
-def _save_mem_history_info(args):
-    # Save a pickle file to be loaded by PyTorch's online tool.
-    snapshot_path = _MEM_PROFILE_DIR / f"{_args_info(args)}_{_TIME_INFO}_memory_snapshot.pickle"
-
-    torch.cuda.memory._dump_snapshot(str(snapshot_path))
-
-    print("=" * 80)
-    print(f"memory_used_history: {snapshot_path}")
-
-
-def _append_result_row(csv_path, fieldnames, row):
+def _append_result_row(csv_path, row):
     """Extend older CSV headers while preserving existing cells and unknown fields."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(row)
     write_header = not csv_path.exists() or csv_path.stat().st_size == 0
 
     if not write_header:
@@ -254,157 +303,92 @@ def _append_result_row(csv_path, fieldnames, row):
         writer.writerow(row)
 
 
-def _save_results_csv(args, device, step_times, mem_peak_GiB):
-    mean_s = statistics.mean(step_times)
-    median_s = statistics.median(step_times)
-    stdv_s = statistics.stdev(step_times) if len(step_times) > 1 else 0.0
-
-    csv_path = _OUTPUT_DIR / "benchmark_results.csv"
-
-    fieldnames = [
-        "timestamp",
-        "mode",
-        "measurement_scope",
-        "model_size",
-        "d_model",
-        "d_ff",
-        "num_layers",
-        "num_heads",
-        "context_length",
-        "batch_size",
-        "vocab_size",
-        "rope_theta",
-        "lr",
-        "seed",
-        "mixed_precision",
-        "compile",
-        "mem_snapshot",
-        "annotate",
-        "warmup",
-        "steps",
-        "device",
-        "gpu",
-        "torch_version",
-        "cuda_version",
-        "mean_ms",
-        "median_ms",
-        "stddev_ms",
-        "mem_peak_GiB",
-    ]
-
+def _save_results_csv(args, device, timestamp, summary, device_name):
     row = {
-        "timestamp": _TIME_INFO,
-        "mode": args.mode,
+        "timestamp": timestamp,
         "measurement_scope": _MEASUREMENT_SCOPES[args.mode],
-        "model_size": args.model_size,
-        "d_model": args.d_model,
-        "d_ff": args.d_ff,
-        "num_layers": args.num_layers,
-        "num_heads": args.num_heads,
-        "context_length": args.context_length,
-        "batch_size": args.batch_size,
-        "vocab_size": args.vocab_size,
-        "rope_theta": args.rope_theta,
-        "lr": args.lr,
-        "seed": args.seed,
-        "mixed_precision": args.mixed_precision,
-        "compile": args.compile,
-        "mem_snapshot": args.mem_snapshot,
-        "annotate": args.annotate,
-        "warmup": args.warmup,
-        "steps": args.steps,
+        **{name: getattr(args, name) for name in _CONFIG_FIELDS},
         "device": str(device),
-        "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else "",
+        "gpu": device_name if device.type == "cuda" else "",
         "torch_version": str(torch.__version__),
         "cuda_version": str(torch.version.cuda or ""),
-        "mean_ms": mean_s * 1000,
-        "median_ms": median_s * 1000,
-        "stddev_ms": stdv_s * 1000,
-        "mem_peak_GiB": mem_peak_GiB,
+        **summary,
     }
-
-    _append_result_row(csv_path, fieldnames, row)
-
-    print("=" * 80)
-    print(f"results saved: {csv_path}")
+    csv_path = _OUTPUT_DIR / "benchmark_results.csv"
+    _append_result_row(csv_path, row)
+    return csv_path
 
 
-def benchmark():
-    args = _parse_args()
+def benchmark(argv=None):
+    args = _parse_args(argv)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     device = torch.device(args.device)
+    if device.type == "cuda":
+        device = torch.device("cuda", torch.cuda.current_device() if device.index is None else device.index)
 
     torch.manual_seed(args.seed)
 
-    if args.annotate:
-        _annotate_units()
+    precision = "bf16 autocast" if args.mixed_precision else "fp32"
+    execution = "compiled" if args.compile else "eager"
+    device_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
+    print(
+        f"{args.model_size} | {_MEASUREMENT_SCOPES[args.mode]} | {device} ({device_name}) | batch={args.batch_size}, seq={args.context_length} | {precision}, {execution}",
+        flush=True,
+    )
 
-    model = _build_model(args, device)
+    device_context = torch.cuda.device(device) if device.type == "cuda" else contextlib.nullcontext()
+    with device_context, _annotated_attention(args.annotate):
+        model = _build_model(args, device)
+        model.train(args.mode != "eval")
+        optimizer = AdamW(model.parameters(), lr=args.lr) if args.mode == "train" else None
+        if args.compile:
+            model.compile()
+        x, y = _make_batch(args, device)
 
-    if args.mode == "eval":
-        model.eval()
-    else:
-        model.train()
-
-    optimizer = AdamW(model.parameters(), lr=args.lr)
-
-    if args.compile:
-        model = torch.compile(model)
-
-    x, y = _make_batch(args, device)
-
-    # warm-up：不记录时间，单独打 warmup 标签，方便在 nsys 里滤掉
-    with _nvtx_range("warmup", args.annotate):
-        for _ in range(args.warmup):
-            _run_step(args, device, model, x, y, optimizer)
-            _synchronize(device)
-            optimizer.zero_grad(set_to_none=True)
-
-    step_times = []
-
-    # 开始前同步，避免上一个 step 的异步 CUDA 工作混入当前计时
-    _synchronize(device)
-
-    # 正式测量：benchmark 包住全部测量步，每个 step 再单独一个 range。
-
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-
-        if args.mem_snapshot:
-            torch.cuda.memory._record_memory_history(max_entries=1000000)
-
-    print("=" * 80)
-    print(f"Benchmark start! mode={args.mode}, scope={_MEASUREMENT_SCOPES[args.mode]}")
-
-    with _nvtx_range("benchmark", args.annotate):
-        for _ in range(args.steps):
-            optimizer.zero_grad(set_to_none=True)
-
-            with _nvtx_range("step", args.annotate):
-                start = timeit.default_timer()
-
+        with _nvtx_range("warmup", args.annotate):
+            for _ in range(args.warmup):
+                model.zero_grad(set_to_none=True)
                 _run_step(args, device, model, x, y, optimizer)
-
-                # 题目要求：每个 step 后同步
                 _synchronize(device)
 
-                elapsed = timeit.default_timer() - start
+        # Release warmup gradients before measuring peak allocated memory.
+        model.zero_grad(set_to_none=True)
+        _synchronize(device)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
 
-            step_times.append(elapsed)
-
-    mem_peak_gib = None
-    if device.type == "cuda":
-        mem_peak_gib = torch.cuda.max_memory_allocated(device) / 1024**3
-
+        snapshot_path = None
         if args.mem_snapshot:
-            _save_mem_history_info(args)
-            torch.cuda.memory._record_memory_history(enabled=None)
+            file_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            snapshot_path = _MEM_PROFILE_DIR / f"{_args_info(args)}_{file_timestamp}_memory_snapshot.pickle"
 
-    _save_results_csv(args, device, step_times, mem_peak_gib)
+        step_times_ms = []
+        with _memory_history(snapshot_path), _nvtx_range("benchmark", args.annotate):
+            for _ in range(args.steps):
+                model.zero_grad(set_to_none=True)
+                _synchronize(device)
+                with _nvtx_range("step", args.annotate):
+                    start = time.perf_counter()
+                    _run_step(args, device, model, x, y, optimizer)
+                    _synchronize(device)
+                    step_times_ms.append((time.perf_counter() - start) * 1000)
 
-    print("=" * 80)
-    print("Benchmark complete!")
-    print("=" * 80)
+            mem_peak_gib = torch.cuda.max_memory_allocated(device) / 1024**3 if device.type == "cuda" else None
+
+    summary = {
+        "mean_ms": statistics.mean(step_times_ms),
+        "median_ms": statistics.median(step_times_ms),
+        "stddev_ms": statistics.stdev(step_times_ms) if len(step_times_ms) > 1 else 0.0,
+        "mem_peak_GiB": mem_peak_gib,
+    }
+    csv_path = _save_results_csv(args, device, timestamp, summary, device_name)
+    memory = f" | peak allocated={mem_peak_gib:.3f} GiB" if mem_peak_gib is not None else ""
+    print(f"Latency: mean={summary['mean_ms']:.3f} ms | median={summary['median_ms']:.3f} ms | std={summary['stddev_ms']:.3f} ms{memory}")
+    print(f"CSV: {csv_path}")
+    if snapshot_path is not None:
+        print(f"Memory snapshot: {snapshot_path}")
+    return summary
 
 
 if __name__ == "__main__":

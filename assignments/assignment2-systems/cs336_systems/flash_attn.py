@@ -139,6 +139,10 @@ def flash_fwd_kernel(
     tl.store(O_block_ptr, (O_block / L_block[:, None]).to(O_block_ptr.type.element_ty), boundary_check=(0, 1))
     tl.store(L_block_ptr, (tl.log(L_block) + m).to(L_block_ptr.type.element_ty), boundary_check=(0,))
 
+@
+def flash_bwd_kernel():
+    pass
+
 
 def flash_bwd_torch(Q, K, V, O, dO, L, is_causal=False):
     N_q = Q.shape[-2]

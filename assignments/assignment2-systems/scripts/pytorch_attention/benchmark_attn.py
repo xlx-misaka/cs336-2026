@@ -1,196 +1,191 @@
+"""Time eager or compiled causal PyTorch attention and measure CUDA memory."""
+
 import argparse
 import csv
 import gc
 import statistics
-import timeit
+import time
 from pathlib import Path
 
 import torch
-from cs336_basics import model
+from cs336_basics.model import scaled_dot_product_attention
 
 _OUTPUT_DIR = Path(__file__).resolve().parent
+_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
+_FIELDS = [
+    "gpu",
+    "compiled",
+    "dtype",
+    "causal",
+    "d_model",
+    "context_length",
+    "batch_size",
+    "warmup",
+    "steps",
+    "forward_samples",
+    "backward_samples",
+    "forward_ms",
+    "backward_ms",
+    "baseline_MiB",
+    "before_backward_MiB",
+    "forward_live_increment_MiB",
+    "forward_peak_MiB",
+    "backward_phase_peak_MiB",
+    "status",
+    "oom_stage",
+]
 
-_STEP = 100
+
+def _mean(values, scale: float = 1.0):
+    return statistics.mean(values) * scale if values else ""
 
 
-def _parse_args():
-    parser = argparse.ArgumentParser()
+def benchmark(d_model, context_length, batch_size=8, torch_compile=False, *, dtype=torch.float32, warmup=5, steps=100):
+    if min(d_model, context_length, batch_size, steps) <= 0 or warmup < 0:
+        raise ValueError("Sizes and steps must be positive; warmup must be nonnegative")
+    if dtype not in _DTYPES.values():
+        raise ValueError("dtype must be float32 or bfloat16")
+    if torch_compile and warmup == 0:
+        raise ValueError("Compiled benchmarks need at least one warmup iteration")
+    if not torch.cuda.is_available():
+        raise RuntimeError("A CUDA GPU is required")
 
-    parser.add_argument(
-        "--compile",
-        action="store_true",
-        help="use torch.compile",
-    )
-
-    args = parser.parse_args()
-
-    return args
-
-
-def benchmark(d_model, context_length, batch_size=8, torch_compile=False):
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    assert device == "cuda"
-
-    Q = torch.randn(batch_size, context_length, d_model, requires_grad=True, device=device)
-    K = torch.randn(batch_size, context_length, d_model, requires_grad=True, device=device)
-    V = torch.randn(batch_size, context_length, d_model, requires_grad=True, device=device)
-
-    i = torch.arange(0, context_length, device=device)[:, None]
-    j = torch.arange(0, context_length, device=device)[None, :]
-    mask = i >= j
-
-    func_attn = model.scaled_dot_product_attention
-    if torch_compile:
-        func_attn = torch.compile(func_attn)
-
-    def run_forward(Q, K, V, mask=None):
-        return func_attn(Q, K, V, mask)
-
-    warmup_iter = 5
-    for _ in range(warmup_iter):
-        O = run_forward(Q, K, V, mask)
-
-        O.sum().backward()
-
-        Q.grad = None
-        K.grad = None
-        V.grad = None
-        del O
-
-    torch.cuda.synchronize()
-
-    fwd_times = []
-    bwd_times = []
-    fwd_peak_mems = []
-    fwd_use_mems = []
-    bwd_peak_mems = []
-
-    for _ in range(_STEP):
-        torch.cuda.reset_peak_memory_stats()
-
-        start = timeit.default_timer()
-
-        O = run_forward(Q, K, V, mask)
-
-        torch.cuda.synchronize()
-
-        end = timeit.default_timer()
-
-        fwd_times.append(end - start)
-        fwd_peak_mems.append(torch.cuda.max_memory_allocated())
-        fwd_use_mems.append(torch.cuda.memory_allocated())
-
-        loss = O.sum()
-
-        torch.cuda.synchronize()
-
-        torch.cuda.reset_peak_memory_stats()
-
-        start = timeit.default_timer()
-
-        loss.backward()
-
-        torch.cuda.synchronize()
-
-        end = timeit.default_timer()
-
-        bwd_peak_mems.append(torch.cuda.max_memory_allocated())
-        bwd_times.append(end - start)
-
-        Q.grad = None
-        K.grad = None
-        V.grad = None
-
-        del O, loss
-
-        torch.cuda.synchronize()
-
-    fwd_time_mean = statistics.mean(fwd_times)
-    bwd_time_mean = statistics.mean(bwd_times)
-    fwd_use_mem_mean = statistics.mean(fwd_use_mems)
-    fwd_peak_mem_mean = statistics.mean(fwd_peak_mems)
-    bwd_peak_mem_mean = statistics.mean(bwd_peak_mems)
-
-    print("=" * 40 + f"d_model = {d_model} context_length = {context_length}" + "=" * 40)
-    print(f"前向传播平均耗时: {fwd_time_mean * 1000:.2f} ms")
-    print(f"反向传播平均耗时: {bwd_time_mean * 1000:.2f} ms")
-    print(f"前向传播平均占用内存: {fwd_use_mem_mean / 1024**2:.2f} MiB")
-    print(f"前向传播平均峰值内存: {fwd_peak_mem_mean / 1024**2:.2f} MiB")
-    print(f"反向传播总平均峰值内存: {bwd_peak_mem_mean / 1024**2:.2f} MiB")
-
-    return {
+    result = {
+        "gpu": torch.cuda.get_device_name(),
+        "compiled": torch_compile,
+        "causal": True,
+        "dtype": str(dtype).removeprefix("torch."),
         "d_model": d_model,
         "context_length": context_length,
         "batch_size": batch_size,
-        "forward_ms": fwd_time_mean * 1000,
-        "backward_ms": bwd_time_mean * 1000,
-        "before_backward_MiB": fwd_use_mem_mean / 1024**2,
-        "forward_peak_MiB": fwd_peak_mem_mean / 1024**2,
-        "backward_phase_peak_MiB": bwd_peak_mem_mean / 1024**2,
-        "status": "OK",
+        "warmup": warmup,
+        "steps": steps,
+        "status": "ok",
+        "oom_stage": "",
     }
+    inputs = []
+    upstream = positions = mask = output = attention = None
+    forward_times, backward_times = [], []
+    baselines, live_memory, live_increments, forward_peaks, backward_peaks = [], [], [], [], []
+    stage = "inputs"
+    try:
+        generator = torch.Generator(device="cuda").manual_seed(0)
+        inputs = [torch.randn(batch_size, context_length, d_model, device="cuda", dtype=dtype, generator=generator).requires_grad_() for _ in range(3)]
+        upstream = torch.randn(inputs[0].shape, device="cuda", dtype=dtype, generator=generator)
+        positions = torch.arange(context_length, device="cuda")
+        mask = positions[:, None] >= positions[None, :]
+        attention = torch.compile(scaled_dot_product_attention) if torch_compile else scaled_dot_product_attention
+
+        for _ in range(warmup):
+            stage = "warmup_forward"
+            output = attention(inputs[0], inputs[1], inputs[2], mask)
+            stage = "warmup_backward"
+            output.backward(upstream)
+            for tensor in inputs:
+                tensor.grad = None
+            output = None
+        torch.cuda.synchronize()
+
+        for _ in range(steps):
+            # Synchronize before starting the host timer as well as after each pass.
+            torch.cuda.synchronize()
+            baseline = torch.cuda.memory_allocated()
+            torch.cuda.reset_peak_memory_stats()
+            stage = "forward"
+            start = time.perf_counter()
+            output = attention(inputs[0], inputs[1], inputs[2], mask)
+            torch.cuda.synchronize()
+            forward_times.append(time.perf_counter() - start)
+            baselines.append(baseline)
+            live_memory.append(torch.cuda.memory_allocated())
+            live_increments.append(live_memory[-1] - baseline)
+            forward_peaks.append(torch.cuda.max_memory_allocated())
+
+            torch.cuda.reset_peak_memory_stats()
+            stage = "backward"
+            start = time.perf_counter()
+            output.backward(upstream)
+            torch.cuda.synchronize()
+            backward_times.append(time.perf_counter() - start)
+            backward_peaks.append(torch.cuda.max_memory_allocated())
+            for tensor in inputs:
+                tensor.grad = None
+            output = None
+    except torch.cuda.OutOfMemoryError:
+        result.update(status="oom", oom_stage=stage)
+    finally:
+        output = upstream = positions = mask = attention = None
+        inputs.clear()
+        tensor = None
+    # An OOM in backward does not discard successfully measured forward passes.
+    result.update(
+        forward_samples=len(forward_times),
+        backward_samples=len(backward_times),
+        forward_ms=_mean(forward_times, 1000),
+        backward_ms=_mean(backward_times, 1000),
+        baseline_MiB=_mean(baselines, 1 / 1024**2),
+        before_backward_MiB=_mean(live_memory, 1 / 1024**2),
+        forward_live_increment_MiB=_mean(live_increments, 1 / 1024**2),
+        forward_peak_MiB=_mean(forward_peaks, 1 / 1024**2),
+        backward_phase_peak_MiB=_mean(backward_peaks, 1 / 1024**2),
+    )
+    gc.collect()
+    torch.cuda.empty_cache()
+    return result
 
 
-def _save_results_csv(results, torch_compile=False):
-    fieldnames = [
-        "d_model",
-        "context_length",
-        "batch_size",
-        "forward_ms",
-        "backward_ms",
-        "before_backward_MiB",
-        "forward_peak_MiB",
-        "backward_phase_peak_MiB",
-        "status",
-    ]
+def _parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--compile", action="store_true", help="Use torch.compile for forward and backward")
+    parser.add_argument("--d-models", nargs="+", type=int, default=[16, 32, 64, 128])
+    parser.add_argument("--context-lengths", nargs="+", type=int, default=[256, 1024, 4096, 8192, 16384])
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--dtype", choices=_DTYPES, default="float32")
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--steps", type=int, default=100)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    if min(*args.d_models, *args.context_lengths, args.batch_size, args.steps) <= 0 or args.warmup < 0:
+        parser.error("Sizes and steps must be positive; warmup must be nonnegative")
+    if args.compile and args.warmup == 0:
+        parser.error("Compiled benchmarks need at least one warmup iteration to exclude compilation")
+    return args
 
-    res_path = _OUTPUT_DIR / (f"{torch.cuda.get_device_name()}_benchmark_attn.csv" if not torch_compile else f"{torch.cuda.get_device_name()}_benchmark_attn_compile.csv")
 
-    with open(res_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+def main():
+    args = _parse_args()
+    if not torch.cuda.is_available():
+        raise RuntimeError("A CUDA GPU is required")
+    gpu = torch.cuda.get_device_name()
+    suffix = "_compile" if args.compile else ""
+    path = args.output or _OUTPUT_DIR / f"{gpu}_benchmark_attn{suffix}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"GPU: {gpu}\nResults: {path}")
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=_FIELDS)
         writer.writeheader()
-        writer.writerows(results)
-
-    print("=" * 80)
-    print(f"Saved results to {res_path}")
+        file.flush()
+        for dim in args.d_models:
+            for length in args.context_lengths:
+                result = benchmark(
+                    dim,
+                    length,
+                    args.batch_size,
+                    args.compile,
+                    dtype=_DTYPES[args.dtype],
+                    warmup=args.warmup,
+                    steps=args.steps,
+                )
+                writer.writerow(result)
+                file.flush()
+                if result["status"] == "ok":
+                    print(
+                        f"D={dim} N={length}: fwd={result['forward_ms']:.3f}ms bwd={result['backward_ms']:.3f}ms before_bwd={result['before_backward_MiB']:.2f}MiB",
+                        flush=True,
+                    )
+                else:
+                    print(f"D={dim} N={length}: OOM during {result['oom_stage']}", flush=True)
 
 
 if __name__ == "__main__":
-    args = _parse_args()
-
-    d_models = [16, 32, 64, 128]
-    context_lengths = [256, 1024, 4096, 8192, 16384]
-
-    results = []
-
-    for d_model in d_models:
-        for context_length in context_lengths:
-            try:
-                results.append(benchmark(d_model, context_length, torch_compile=args.compile))
-
-            except torch.cuda.OutOfMemoryError:
-                print("=" * 40 + f"d_model = {d_model} context_length = {context_length}" + "=" * 40)
-                print("CUDA 显存不足")
-
-                results.append(
-                    {
-                        "d_model": d_model,
-                        "context_length": context_length,
-                        "batch_size": 8,
-                        "forward_ms": "",
-                        "backward_ms": "",
-                        "before_backward_MiB": "",
-                        "forward_peak_MiB": "",
-                        "backward_phase_peak_MiB": "",
-                        "status": "OOM",
-                    }
-                )
-
-            gc.collect()
-            torch.cuda.empty_cache()
-
-    _save_results_csv(results, args.compile)
-
-    print("=" * 40 + "所有测试完成!" + "=" * 40)
+    main()

@@ -1,4 +1,12 @@
-"""Measure peak memory once per checkpoint granularity using the course xl config."""
+"""Measure peak memory once per checkpoint granularity using the course xl config.
+
+显存估算：默认 FP32 参数约 12.5 GiB，参数 + 完整梯度约 25 GiB；
+还需额外容纳 checkpoint 输入及重计算激活，总峰值随 k 改变，完整默认模型尚未实测。
+AutoDL 保守选择：单张 PRO 6000 96GB（官网参考价约 6.98 元/时），显存余量较多。
+预算优先可试 A800 80GB（约 5.59 元/时），大 k 是否能容纳仍需实测；24GB / 32GB 不适合默认配置。
+推荐基于显存与官网参考价，不代表已测得最低总费用；本脚本不自动合并多卡显存。
+参考价于 2026-10-21 检索自 https://www.autodl.com/home ，库存和成交价以算力市场为准。
+"""
 
 import csv
 import gc

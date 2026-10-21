@@ -1,4 +1,10 @@
-"""Benchmark eager and compiled attention in one run, with 100 passes each."""
+"""Benchmark eager and compiled attention in one run, with 100 passes each.
+
+显存估算：默认未编译 FP32 最大配置约需 49 GiB（由中等规模实测外推），编译版峰值另计。
+AutoDL 推荐：单张 A800 80GB（官网参考价约 5.59 元/时），给默认矩阵及运行时留出余量。
+省钱试跑可选 RTX 4090 24GB（约 1.88 元/时），较大配置 OOM 会正常记录；48GB 不保证跑通最大配置。
+参考价于 2026-10-21 检索自 https://www.autodl.com/home ，库存和成交价以算力市场为准。
+"""
 
 import csv
 import gc

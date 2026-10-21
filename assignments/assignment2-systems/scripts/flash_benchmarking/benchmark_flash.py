@@ -1,4 +1,12 @@
-"""Run the course FlashAttention benchmark matrix once."""
+"""Run the course FlashAttention benchmark matrix once.
+
+显存估算（默认最大配置，非最大配置实测）：普通 PyTorch FP32 约 100 GiB，BF16 约 52 GiB；
+Triton 的主要张量约 0.1–0.4 GiB，另加 CUDA / do_bench 缓存，8GB 卡可用于调试。
+AutoDL 省钱选择：单张 RTX 4090 24GB（官网参考价约 1.88 元/时），大配置 OOM 会记录并继续。
+若希望跑通全部 BF16 普通 attention 配置，可选 A800 80GB（约 5.59 元/时）；
+最大 FP32 普通 attention 在 80GB / 96GB 卡上仍可能 OOM，不为此额外推荐昂贵机型。
+参考价于 2026-10-21 检索自 https://www.autodl.com/home ，库存和成交价以算力市场为准。
+"""
 
 import csv
 import gc

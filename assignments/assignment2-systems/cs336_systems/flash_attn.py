@@ -499,7 +499,7 @@ def flash_bwd_kernel_Q(
     tl.store(dQ_block_ptr, dQ_block.to(dQ_block_ptr.type.element_ty), boundary_check=(0, 1))
 
 
-def flash_bwd_torch(Q, K, V, O, dO, L, is_causal=False):
+def flash_bwd_torch(Q, K, V, O, dO, L, is_causal=False):  # noqa: E741
     N_q = Q.shape[-2]
     N_k = K.shape[-2]
     d = Q.shape[-1]
@@ -566,7 +566,7 @@ class TorchFlashAttention(torch.autograd.Function):
         num_query_row_tiles = ceil(N_q / B_q)
         num_key_row_tiles = ceil(N_k / B_k)
 
-        O = torch.zeros_like(Q, dtype=torch.float32)  # ..., N_q, d
+        O = torch.zeros_like(Q, dtype=torch.float32)  # ..., N_q, d  # noqa: E741
         L = torch.zeros(Q.shape[:-1], device=Q.device, dtype=torch.float32)  # ..., N_q
 
         ctx.d = d
@@ -629,7 +629,7 @@ class TorchFlashAttention(torch.autograd.Function):
     def backward(ctx, *grad_outputs):
         dO = grad_outputs[0]
 
-        L, Q, K, V, O = ctx.saved_tensors
+        L, Q, K, V, O = ctx.saved_tensors  # noqa: E741
 
         return flash_bwd_torch(Q, K, V, O, dO, L, ctx.is_causal)
 
@@ -652,7 +652,7 @@ class TritonFlashAttention(torch.autograd.Function):
         assert N_QURIES >= Q_TILE_SIZE
         assert N_KEYS >= K_TILE_SIZE
 
-        O = torch.zeros_like(Q)
+        O = torch.zeros_like(Q)  # noqa: E741
         L = torch.zeros(Q.shape[:-1], device=Q.device, dtype=torch.float32)
 
         ctx.DIM = DIM
@@ -698,7 +698,7 @@ class TritonFlashAttention(torch.autograd.Function):
     def backward(ctx, *grad_outputs):
         dO = grad_outputs[0]
 
-        L, Q, K, V, O = ctx.saved_tensors
+        L, Q, K, V, O = ctx.saved_tensors  # noqa: E741
 
         BATCH_SIZE = Q.shape[0]
         N_QURIES = Q.shape[1]

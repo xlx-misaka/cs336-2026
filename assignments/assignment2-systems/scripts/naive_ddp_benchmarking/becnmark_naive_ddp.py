@@ -1,3 +1,18 @@
+"""Benchmark Naive DDP training and gradient synchronization on one node with two GPUs.
+
+AutoDL 租卡建议（默认 xl、FP32、AdamW、全局 batch=4、每卡 batch=2、序列长 512）：
+- 预算优先：同一实例租 2 张 A800 80GB，官网参考价约 5.59 元/卡时，合计 11.18 元/时。
+- 显存余量优先：同一实例租 2 张 PRO 6000 96GB，约 6.98 元/卡时，合计 13.96 元/时。
+- 每卡约 34.1 亿参数：FP32 参数约 12.7 GiB；参数、梯度、AdamW 的 m/v 合计约 50.8 GiB。
+  还需容纳激活、通信缓冲及优化器临时张量；上述数值不是完整训练峰值，完整 xl 双卡尚未实测。
+- DDP 每卡保存完整模型和优化器状态，显存不会相加；24GB、32GB、48GB 单卡不适合当前配置。
+- 必须选择同一台机器上的两张卡；比较 DDP 方案时保持卡型、互联拓扑和精度一致，并记录拓扑。
+- 当前脚本先在 CPU 创建模型，建议实例配备至少 64GB 主机内存。
+参考价于 2026-10-24 检索，实际价格及同机双卡库存以租用页面为准：
+https://www.autodl.com/home
+https://www.autodl.com/docs/distributed_training/
+"""
+
 import csv
 import os
 from pathlib import Path

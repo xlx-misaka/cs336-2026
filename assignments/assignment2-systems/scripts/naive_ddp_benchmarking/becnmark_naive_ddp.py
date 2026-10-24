@@ -38,6 +38,7 @@ model_zoo = {
     "xl": {"d_model": 2560, "d_ff": 10240, "num_layers": 32, "num_heads": 32},
     "10B": {"d_model": 4608, "d_ff": 12288, "num_layers": 50, "num_heads": 36},
 }
+model_size = "xl"
 vocab_size = 10000
 batch_size = 4
 context_length = 512
@@ -46,6 +47,7 @@ context_length = 512
 def save_results(results):
     with open(path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FILEDS)
+        writer.writeheader()
         writer.writerows(results)
 
 
@@ -55,11 +57,11 @@ def synchronize(device: str):
 
 
 def setup(rank, world_size, device):
+    if device == "cuda":
+        torch.cuda.set_device(rank)
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "29500"
     dist.init_process_group("nccl" if device == "cuda" else "gloo", rank=rank, world_size=world_size)
-    if device == "cuda":
-        torch.cuda.set_device(rank)
 
 
 def run_dist(rank, world_size, device, x_all, y_all, warmup_iter=5, repeate_iter=10):
@@ -68,7 +70,7 @@ def run_dist(rank, world_size, device, x_all, y_all, warmup_iter=5, repeate_iter
         step = batch_size // world_size
         x = x_all[rank * step : (rank + 1) * step, :].to(device)
         y = y_all[rank * step : (rank + 1) * step, :].to(device)
-        model = BasicsTransformerLM(vocab_size, context_length, **model_zoo["xl"]).to(device)
+        model = BasicsTransformerLM(vocab_size, context_length, **model_zoo[model_size]).to(device)
         ddp_model = NaiveDDP(model)
         ddp_optimizer = AdamW(ddp_model.parameters())
 
@@ -136,8 +138,9 @@ def benchmark(device, world_size=2):
 
 if __name__ == "__main__":
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FILEDS)
-        writer.writeheader()
+        writer = csv.writer(f)
+        writer.writerow(["model_zoo ", "Batch Size", "Context Length", "Vocab Size"])
+        writer.writerow([model_size, batch_size, context_length, vocab_size])
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 

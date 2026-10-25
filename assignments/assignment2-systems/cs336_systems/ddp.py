@@ -9,14 +9,28 @@ class OverLapDDP(nn.Module):
         super().__init__()
         self.module = module
         self.world_size = dist.get_world_size()
+        self.handles = []
         for param in self.parameters():
             dist.broadcast(param.data, src=0)
 
         def all_reduce_hook(param):
-            dist.all_reduce(param.grad)
+            if param.grad is None:
+                return
+            param.grad = param.grad / self.world_size
+            self.handles.append(dist.all_reduce(param.grad, async_op=True))
 
         for param in self.parameters():
-            param.register_hook(all_reduce_hook)
+            if not param.requires_grad:
+                continue
+            param.register_post_accumulate_grad_hook(all_reduce_hook)
+
+    def forward(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
+
+    def finish_gradient_synchronization(self):
+        for handle in self.handles:
+            handle.wait()
+        self.handles.clear()
 
 
 class FlatDDP(nn.Module):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from cs336_systems import flash_attn
-from cs336_systems.ddp import FlatDDP
+from cs336_systems.ddp import OverLapDDP
 
 
 def get_flashattention_autograd_function_pytorch() -> type:
@@ -53,7 +53,7 @@ def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
         Instance of a DDP class.
     """
     # For example: return DDP(module)
-    return FlatDDP(module)
+    return OverLapDDP(module)
 
 
 def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Optimizer):
@@ -68,7 +68,7 @@ def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Opt
             Optimizer being used with the DDP-wrapped model.
     """
     # For example: ddp_model.finish_gradient_synchronization()
-    assert isinstance(ddp_model, FlatDDP)
+    assert isinstance(ddp_model, OverLapDDP)
     return ddp_model.finish_gradient_synchronization()
 
 

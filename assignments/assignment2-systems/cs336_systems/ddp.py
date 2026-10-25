@@ -102,13 +102,14 @@ class ShardedOptimizer(optim.Optimizer):
     def step(self, closure: Callable[[], float]) -> float: ...
 
     def step(self, closure: Callable[[], float] | None = None, **kwargs):
-        assert self.optimizer is not None, "Optimizer not initialized. Call init_optimizer first."
-        self.optimizer.step(closure, **kwargs)
+        loss = None
+        if self.optimizer is not None:
+            loss = self.optimizer.step(closure, **kwargs)
 
         for param, rank in self.rank_per_param.items():
             dist.broadcast(param.data, src=rank, async_op=False)
 
-        return closure() if closure else None
+        return loss
 
     def add_param_group(self, param_group: dict[str, Any]):
         local_params = []

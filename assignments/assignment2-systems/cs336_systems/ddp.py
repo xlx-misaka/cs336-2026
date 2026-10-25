@@ -14,7 +14,7 @@ class OverLapDDP(nn.Module):
         def all_reduce_hook(param):
             if param.grad is None:
                 return
-            param.grad = param.grad / self.world_size
+            param.grad.div_(self.world_size)
             self.handles.append(dist.all_reduce(param.grad, async_op=True))
 
         for param in self.parameters():

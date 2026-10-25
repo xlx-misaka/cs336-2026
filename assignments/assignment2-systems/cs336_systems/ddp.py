@@ -127,9 +127,9 @@ class ShardedOptimizer(optim.Optimizer):
                 else:
                     local_group["params"] = local_params
 
-                if self.optimizer:
-                    self.optimizer.add_param_group(local_group)
-                else:
-                    self.optimizer = self.optimizer_cls([local_group], **self.optimizer_kwargs)
+            if self.optimizer:
+                self.optimizer.add_param_group(local_group)
+            else:
+                self.optimizer = self.optimizer_cls([local_group], **self.optimizer_kwargs)
 
         super().add_param_group(param_group)

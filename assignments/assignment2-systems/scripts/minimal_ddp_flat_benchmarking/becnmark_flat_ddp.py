@@ -80,7 +80,7 @@ def run_dist(rank, world_size, device, x_all, y_all, warmup_iter=5, repeate_iter
             logits = ddp_model(x)
             loss = cross_entropy(logits, y)
             loss.backward()
-            ddp_model.finish_gradient_synchronization(ddp_optimizer)
+            ddp_model.finish_gradient_synchronization()
             ddp_optimizer.step()
 
         step_times = []
@@ -95,7 +95,7 @@ def run_dist(rank, world_size, device, x_all, y_all, warmup_iter=5, repeate_iter
             loss.backward()
             synchronize(device)
             comm_start_time = timeit.default_timer()
-            ddp_model.finish_gradient_synchronization(ddp_optimizer)
+            ddp_model.finish_gradient_synchronization()
             synchronize(device)
             comm_end_time = timeit.default_timer() - comm_start_time
             step_comm_times.append(comm_end_time)

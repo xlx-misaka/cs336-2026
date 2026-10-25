@@ -69,7 +69,7 @@ def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Opt
     """
     # For example: ddp_model.finish_gradient_synchronization()
     assert isinstance(ddp_model, FlatDDP)
-    return ddp_model.finish_gradient_synchronization(optimizer)
+    return ddp_model.finish_gradient_synchronization()
 
 
 def get_fsdp(module: torch.nn.Module, compute_dtype: torch.dtype | None = None) -> torch.nn.Module:

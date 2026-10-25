@@ -10,8 +10,6 @@ class OverLapDDP(nn.Module):
         self.module = module
         self.world_size = dist.get_world_size()
         self.handles = []
-        for param in self.parameters():
-            dist.broadcast(param.data, src=0)
 
         def all_reduce_hook(param):
             if param.grad is None:
@@ -20,6 +18,7 @@ class OverLapDDP(nn.Module):
             self.handles.append(dist.all_reduce(param.grad, async_op=True))
 
         for param in self.parameters():
+            dist.broadcast(param.data, src=0)
             if not param.requires_grad:
                 continue
             param.register_post_accumulate_grad_hook(all_reduce_hook)

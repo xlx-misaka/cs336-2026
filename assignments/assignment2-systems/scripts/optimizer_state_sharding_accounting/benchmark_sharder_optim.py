@@ -1,16 +1,27 @@
-"""Benchmark Naive DDP training and gradient synchronization on one node with two GPUs.
+"""Profile peak memory and iteration time with and without optimizer state sharding.
 
-AutoDL 租卡建议（默认 xl、FP32、AdamW、全局 batch=4、每卡 batch=2、序列长 512）：
-- 预算优先：同一实例租 2 张 A800 80GB，官网参考价约 5.59 元/卡时，合计 11.18 元/时。
-- 显存余量优先：同一实例租 2 张 PRO 6000 96GB，约 6.98 元/卡时，合计 13.96 元/时。
-- 每卡约 34.1 亿参数：FP32 参数约 12.7 GiB；参数、梯度、AdamW 的 m/v 合计约 50.8 GiB。
-  还需容纳激活、通信缓冲及优化器临时张量；上述数值不是完整训练峰值，完整 xl 双卡尚未实测。
-- DDP 每卡保存完整模型和优化器状态，显存不会相加；24GB、32GB、48GB 单卡不适合当前配置。
-- 必须选择同一台机器上的两张卡；比较 DDP 方案时保持卡型、互联拓扑和精度一致，并记录拓扑。
-- 当前脚本先在 CPU 创建模型，建议实例配备至少 64GB 主机内存。
-参考价于 2026-10-24 检索，实际价格及同机双卡库存以租用页面为准：
-https://www.autodl.com/home
-https://www.autodl.com/docs/distributed_training/
+默认配置：单节点、2 GPU、xl、FP32、AdamW；全局 batch=4，每卡 batch=2，序列长 512，词表 10000。
+脚本在同一实例上依次运行普通 AdamW 和分片 AdamW，两组均使用 OverLapDDP。
+
+AutoDL 租卡建议（2026-10-26，供默认配置选型参考）：
+- 推荐同一实例租用 2 张相同的 80GB GPU，例如 A800 80GB 或 A100 80GB。
+  如需更多显存余量，可考虑同机 2 张 PRO 6000 96GB；价格和同机双卡库存以租用页面为准。
+- 租卡应满足未分片 AdamW 基线的需求，以便两组实验在同一硬件上完成。
+  不要仅按分片后的状态大小选卡；两组的模型参数和梯度仍在每张 GPU 上保留完整副本。
+- 每卡约 34.1 亿参数；FP32 参数约 12.7 GiB，未分片时参数、梯度及 AdamW 的 m/v 合计约 50.8 GiB。
+  这只是主要张量的估算，还需容纳激活、通信缓冲和优化器临时张量；完整 xl 双卡峰值尚未实测。
+  24GB、32GB、48GB 单卡不适合默认未分片基线；两张卡的显存不能直接合并。
+- 确认租用的是同一台机器上的两张卡。比较时保持卡型和互联拓扑一致，记录 nvidia-smi topo -m。
+  如果要研究高速互联下的通信开销，选择并确认实际具有 NVLink/NVSwitch 连接的实例。
+  80GB 或 96GB 的显存容量本身不能说明两卡之间采用什么互联。
+- 当前脚本先在 CPU 创建模型，建议主机内存至少 64GB；同时确认实例实际分配的内存限额。
+  预留足够磁盘空间安装项目依赖，并使用兼容项目 PyTorch/CUDA 版本的驱动。
+- 建议先按量租用并完成环境、小模型流程检查，再执行默认 xl 实验；本脚本测内存和时间无需安装 nsys。
+  两组都在同一实例运行，结果保存后按平台方式停止实例计费。
+
+租用页面：https://www.autodl.com/home
+单机多卡说明：https://www.autodl.com/docs/distributed_training/
+GPU 与主机内存说明：https://www.autodl.com/docs/gpu/
 """
 
 import csv
@@ -105,23 +116,30 @@ def run_dist(rank, optim_type, world_size, device, x_all, y_all, warmup_iter=5, 
 
         for _ in range(repeate_iter):
             ddp_optimizer.zero_grad()
-            torch.cuda.reset_peak_memory_stats()
+
             synchronize(device)
+            torch.cuda.reset_peak_memory_stats()
             start_time = timeit.default_timer()
+
             logits = ddp_model(x)
             loss = cross_entropy(logits, y)
             loss.backward()
+
             synchronize(device)
             comm_start_time = timeit.default_timer()
+
             ddp_model.finish_gradient_synchronization()
-            before_optim_peak_mems.append(torch.cuda.max_memory_allocated())
+
             synchronize(device)
+            before_optim_peak_mems.append(torch.cuda.max_memory_allocated())
             comm_end_time = timeit.default_timer() - comm_start_time
             step_comm_times.append(comm_end_time)
             torch.cuda.reset_peak_memory_stats()
+
             ddp_optimizer.step()
-            after_optim_peak_mems.append(torch.cuda.max_memory_allocated())
+
             synchronize(device)
+            after_optim_peak_mems.append(torch.cuda.max_memory_allocated())
             end_time = timeit.default_timer()
             step_times.append(end_time - start_time)
 

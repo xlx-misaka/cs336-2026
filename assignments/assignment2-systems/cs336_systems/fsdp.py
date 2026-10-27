@@ -7,6 +7,8 @@ from torch import nn
 import torch
 import torch.distributed as dist
 
+__all__ = ["FSDP"]
+
 
 @dataclass
 class _ShardInfo:

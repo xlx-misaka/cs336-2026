@@ -157,6 +157,7 @@ class FSDP(nn.Module):
             param.grad = param.grad / self.world_size
             self.handles.append(dist.all_reduce(param.grad, async_op=True))
 
+    @torch.no_grad()
     def gather_full_params(self) -> dict[str, torch.Tensor]:
         full_params: dict[str, torch.Tensor] = {}
 

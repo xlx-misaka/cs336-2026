@@ -156,3 +156,25 @@ class FSDP(nn.Module):
         elif param.grad is not None:
             param.grad = param.grad / self.world_size
             self.handles.append(dist.all_reduce(param.grad, async_op=True))
+
+    def gather_full_params(self) -> dict[str, torch.Tensor]:
+        full_params: dict[str, torch.Tensor] = {}
+
+        for name, param in self.module.named_parameters():
+            if param in self._shard_info_per_param:
+                shard_info = self._shard_info_per_param[param]
+                numel = shard_info.numel
+                shape = shard_info.shape
+                master = shard_info.shard_master
+
+                param_data = master.clone()
+
+                slices = [torch.zeros_like(param_data) for _ in range(self.world_size)]
+                dist.all_gather(slices, param_data)
+                full_data = torch.cat(slices, dim=0)[:numel].view(shape).contiguous()
+                full_params[name] = full_data
+
+            else:
+                full_params[name] = param.data.to(torch.float32).clone()
+
+        return full_params

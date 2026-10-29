@@ -1,0 +1,2 @@
+model_zoo ,Batch Size,Context Length,Vocab Size
+xl,4,512,10000

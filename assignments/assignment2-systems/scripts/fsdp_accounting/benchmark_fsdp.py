@@ -3,7 +3,9 @@ r"""Profile XL FSDP training and weight all-gathers on one node with two GPUs.
 当前配置与实现：
 - 单节点、2 GPU、xl、AdamW；全局 batch=4，每卡 batch=2，序列长 512，词表 10000。
 - 默认依次运行 naive、flat、overlap、fsdp，每种实现预热 5 步，再运行 10 个带阶段标记的正式迭代。
-- 三种 DDP 路径使用 FP32；FSDP 指定 compute_dtype=torch.bfloat16。
+- 三种 DDP 路径使用 FP32；FSDP 指定 compute_dtype=torch.bfloat16，并在前向启用 BF16 autocast。
+- 预热与正式迭代均使用相同精度设置；loss 显式转为 FP32 计算，backward 位于 autocast 外。
+- FSDP hooks 会替换参数 data，autocast 禁用权重缓存，避免缓存跨越参数聚集/分片。
 - 当前 FSDP 对 Linear/Embedding 权重分片，长期保存 FP32 主分片；权重聚集和计算使用 BF16。
   梯度转为 FP32 后 reduce-scatter，AdamW 更新本地主分片；RMSNorm 保留完整 FP32 副本，
   其梯度使用 all-reduce。AdamW 的状态随它接收到的参数分片创建。
@@ -37,18 +39,24 @@ AutoDL 租卡建议：
     nsys --version
 
 直接运行，脚本内部 spawn 两个进程，无需再套 torchrun：
-    CUDA_VISIBLE_DEVICES=0,1 uv run python -m scripts.fsdp_accounting.benchmark_fsdp
+    CUDA_VISIBLE_DEVICES=0,1 uv run --no-sync python -m scripts.fsdp_accounting.benchmark_fsdp
 
 采集默认四种实现，报告中通过 rank 和实现类型区分：
     mkdir -p profiles
-    CUDA_VISIBLE_DEVICES=0,1 uv run nsys profile \
+    CUDA_VISIBLE_DEVICES=0,1 uv run --no-sync nsys profile \
         --trace=cuda,nvtx \
-        --pytorch=autograd-nvtx \
         --sample=none --cpuctxsw=none \
         --output=profiles/fsdp_accounting \
         python -m scripts.fsdp_accounting.benchmark_fsdp
 
-仅研究题目 (b) 时可以将运行范围限制为 FSDP，以减少采集时间；当前默认循环仍包含四种实现。
+先用小模型验证完整前向、反向与优化器更新：
+    CS336_MODEL_SIZE=small CS336_DDP_TYPES=fsdp CUDA_VISIBLE_DEVICES=0,1 \
+        uv run --no-sync python -m scripts.fsdp_accounting.benchmark_fsdp
+
+仅研究题目 (b) 时，在上面的采集命令前设置 CS336_DDP_TYPES=fsdp。
+CS336_MODEL_SIZE 默认 xl；CS336_DDP_TYPES 默认 naive,flat,overlap,fsdp。
+上述 nsys 参数兼容当前不支持 --pytorch 的安装；采集程序已有的阶段 NVTX，
+不自动生成 PyTorch 算子级标记。
 代码没有调用 profiler start/stop，使用全程采集，不添加 --capture-range=cudaProfilerApi。
 将 profiles/fsdp_accounting.nsys-rep 下载到本机，用相同或更新版本的 Nsight Systems GUI 打开。
 Nsight 官方说明：https://developer.nvidia.com/nsight-systems/get-started
@@ -108,7 +116,9 @@ model_zoo = {
     "xl": {"d_model": 2560, "d_ff": 10240, "num_layers": 32, "num_heads": 32},
     "10B": {"d_model": 4608, "d_ff": 12288, "num_layers": 50, "num_heads": 36},
 }
-model_size = "xl"
+model_size = os.environ.get("CS336_MODEL_SIZE", "xl")
+if model_size not in model_zoo:
+    raise ValueError(f"Unknown CS336_MODEL_SIZE: {model_size!r}; choose from {list(model_zoo)}")
 vocab_size = 10000
 batch_size = 4
 context_length = 512
@@ -142,8 +152,14 @@ def run_dist(rank, ddp_type, world_size, device, x_all, y_all, warmup_iter=5, re
 
         for _ in range(warmup_iter):
             ddp_optimizer.zero_grad()
-            logits = ddp_model(x)
-            loss = cross_entropy(logits, y)
+            with torch.autocast(
+                device_type=device,
+                dtype=torch.bfloat16,
+                enabled=(ddp_type == "fsdp"),
+                cache_enabled=False,
+            ):
+                logits = ddp_model(x)
+            loss = cross_entropy(logits.float(), y)
             loss.backward()
             ddp_model.finish_gradient_synchronization()
             ddp_optimizer.step()
@@ -152,8 +168,14 @@ def run_dist(rank, ddp_type, world_size, device, x_all, y_all, warmup_iter=5, re
             ddp_optimizer.zero_grad()
             with torch.cuda.nvtx.range(f"rank{rank}/{ddp_type}/train"):
                 with torch.cuda.nvtx.range(f"rank{rank}/{ddp_type}/forward"):
-                    logits = ddp_model(x)
-                loss = cross_entropy(logits, y)
+                    with torch.autocast(
+                        device_type=device,
+                        dtype=torch.bfloat16,
+                        enabled=(ddp_type == "fsdp"),
+                        cache_enabled=False,
+                    ):
+                        logits = ddp_model(x)
+                loss = cross_entropy(logits.float(), y)
 
                 with torch.cuda.nvtx.range(f"rank{rank}/{ddp_type}/backward"):
                     loss.backward()
@@ -185,5 +207,11 @@ if __name__ == "__main__":
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    for ddp_type in ["naive", "flat", "overlap", "fsdp"]:
+    ddp_types = [value.strip() for value in os.environ.get("CS336_DDP_TYPES", "naive,flat,overlap,fsdp").split(",")]
+    invalid_types = set(ddp_types) - {"naive", "flat", "overlap", "fsdp"}
+    if invalid_types:
+        raise ValueError(f"Unknown CS336_DDP_TYPES entries: {sorted(invalid_types)}")
+    for ddp_type in ddp_types:
+        print(f"Starting {ddp_type}: model={model_size}, world_size=2", flush=True)
         benchmark(ddp_type, device, world_size=2)
+        print(f"Completed {ddp_type}", flush=True)

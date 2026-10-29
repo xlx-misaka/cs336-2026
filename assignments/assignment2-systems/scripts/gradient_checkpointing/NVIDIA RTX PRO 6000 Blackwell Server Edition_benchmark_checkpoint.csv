@@ -1,0 +1,8 @@
+gpu,k,peak_mem_MiB,status
+NVIDIA RTX PRO 6000 Blackwell Server Edition,0.5,38626.5224609375,ok
+NVIDIA RTX PRO 6000 Blackwell Server Edition,1,38626.5224609375,ok
+NVIDIA RTX PRO 6000 Blackwell Server Edition,2,44731.5654296875,ok
+NVIDIA RTX PRO 6000 Blackwell Server Edition,3,50837.6083984375,ok
+NVIDIA RTX PRO 6000 Blackwell Server Edition,4,56941.6513671875,ok
+NVIDIA RTX PRO 6000 Blackwell Server Edition,6,69149.7373046875,ok
+NVIDIA RTX PRO 6000 Blackwell Server Edition,8,81359.8232421875,ok

@@ -1,0 +1,5 @@
+model_zoo ,Batch Size,Context Length,Vocab Size
+xl,4,512,10000
+device_name,rank,world_size,step_time_mean_ms,step_comm_time_mean_ms,comm_ratio
+NVIDIA RTX PRO 6000 Blackwell Server Edition,0,2,1292.020760383457,571.1870551109314,44.20881402411905
+NVIDIA RTX PRO 6000 Blackwell Server Edition,1,2,1292.0217108912766,572.0280177891254,44.273870397620705

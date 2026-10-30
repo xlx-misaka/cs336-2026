@@ -217,3 +217,8 @@ __marimo__/
 
 furu/
 logs/
+
+# Keep the small provided IsoFLOPs dataset despite the parent data/ ignore rule.
+!/data/
+/data/*
+!/data/isoflops_curves.json

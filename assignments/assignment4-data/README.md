@@ -10,7 +10,7 @@ raise a GitHub issue or open a pull request with a fix.
 
 This directory is organized as follows:
 
-- [`./cs336_basics`](./cs336_basics): This module contains the staff 
+- [`./cs336_basics`](./cs336_basics): This module contains the staff
   implementation of the language model from assignment 1. You will use this training code
   to train an LM on your filtered data. You should not modify the training logic, since
   your leaderboard submission must use it exactly.

@@ -4,7 +4,7 @@ import fasttext
 
 from cs336_data.common import get_shared_assets_path
 
-_MODEL: Any | None = None
+_MODEL = None
 
 
 def identify_language(text: str) -> tuple[Any, float]:

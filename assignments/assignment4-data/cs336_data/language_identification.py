@@ -8,7 +8,7 @@ _MODEL: Any | None = None
 
 
 def identify_language(text: str) -> tuple[Any, float]:
-
+    """Identify the language of the given text."""
     if not isinstance(text, str):
         raise TypeError("text must be a string")
 

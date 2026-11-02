@@ -12,6 +12,12 @@ from cs336_data.modal_utils import VOLUME_MOUNTS, app, build_image
 from cs336_data.wet_files import EnglishWetFiles
 
 
+# Identify download requests for Wikimedia's User-Agent policy.
+_HTTP_OPENER = urllib.request.build_opener()
+_HTTP_OPENER.addheaders = [("User-Agent", "CS336DataStudy/0.1 (https://github.com/xlx-misaka/cs336-2026)")]
+urllib.request.install_opener(_HTTP_OPENER)
+
+
 @app.function(image=build_image(), volumes=VOLUME_MOUNTS, timeout=60 * 60 * 12, max_containers=128)
 def extract_wiki_urls(shard: str) -> list[str]:
     dump_date = "20260501"

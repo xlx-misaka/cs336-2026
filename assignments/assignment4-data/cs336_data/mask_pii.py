@@ -53,7 +53,7 @@ def mask_ips(text: str) -> tuple[str, int]:
 
 
 def _mask_pii_example():
-    """Example usage of the language identification model."""
+    """Example mask pii."""
     from fastwarc.warc import ArchiveIterator, WarcRecordType
 
     from cs336_data.extract_text import extract_text_from_html_bytes

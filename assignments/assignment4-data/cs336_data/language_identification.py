@@ -1,9 +1,5 @@
 from typing import Any
 
-import fasttext
-
-from cs336_data.common import get_shared_assets_path
-
 _MODEL: Any | None = None
 
 
@@ -29,6 +25,10 @@ def _load_model():
     global _MODEL
     if _MODEL is not None:
         return _MODEL
+
+    import fasttext
+
+    from cs336_data.common import get_shared_assets_path
 
     model_path = get_shared_assets_path() / "classifiers" / "lid.176.bin"
     _MODEL = fasttext.load_model(str(model_path))

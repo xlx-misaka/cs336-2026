@@ -1,5 +1,13 @@
 from nltk.tokenize import word_tokenize
 
+_RANDOM_SEED = 336
+_MIN_WORDS = 50
+_MAX_WORDS = 100_000
+_MIN_MEAN_WORD_LENGTH = 3.0
+_MAX_MEAN_WORD_LENGTH = 10.0
+_MAX_ELLIPSIS_LINE_RATIO = 0.30
+_MIN_ALPHABETIC_WORD_RATIO = 0.80
+
 
 def gopher_quality_filter(text: str) -> bool:
     """
@@ -21,14 +29,11 @@ def gopher_quality_filter(text: str) -> bool:
     alphabetic_word_percentage = alphabetic_words / num_words if num_words > 0 else 0
 
     return (
-        50 <= num_words <= 100000
-        and 3 <= mean_word_length <= 10
-        and ellipsis_lines_percentage <= 0.3
-        and alphabetic_word_percentage >= 0.8
+        _MIN_WORDS <= num_words <= _MAX_WORDS
+        and _MIN_MEAN_WORD_LENGTH <= mean_word_length <= _MAX_MEAN_WORD_LENGTH
+        and ellipsis_lines_percentage <= _MAX_ELLIPSIS_LINE_RATIO
+        and alphabetic_word_percentage >= _MIN_ALPHABETIC_WORD_RATIO
     )
 
 
-class QualityFilter:
-    def __init__(self, min_lines: int = 30, max_lines: int = 100000):
-        self.min_lines = min_lines
-        self.max_lines = max_lines
+class QualityFilter: ...

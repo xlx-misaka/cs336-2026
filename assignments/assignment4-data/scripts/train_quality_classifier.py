@@ -3,20 +3,23 @@ import random
 import subprocess
 from pathlib import Path
 
+import fasttext
 from fastwarc.warc import ArchiveIterator, WarcRecordType
 from more_itertools import sample
 
 from cs336_data.common import get_shared_assets_path
 from cs336_data.extract_text import extract_text_from_html_bytes
 
-_SEED = 336
 _ROOT_PATH = Path("data/quality_classifier_data")
+_ROOT_PATH.mkdir(parents=True, exist_ok=True)
+
+_SEED = 336
 _NUM_WIKI_URLS = 5
 
 random.seed(_SEED)
 
 
-def _get_wiki_urls():
+def get_wiki_urls():
     """
     Load a specified number of Wikipedia URLs from a compressed text file.
     """
@@ -30,15 +33,15 @@ def _get_wiki_urls():
         file.writelines(url.strip() + "\n" for url in selected_urls)
 
 
-def _wget_wiki_urls():
+def wget_wiki_urls():
     """
     Download a list of URLs using wget.
     """
     wiki_urls_path = _ROOT_PATH / "sampled_wiki_urls.txt"
     if not wiki_urls_path.exists():
-        _get_wiki_urls()
+        get_wiki_urls()
 
-    wiki_warc_path = _ROOT_PATH / "subsampled_wiki"
+    wiki_warc_path = _ROOT_PATH / "sampled_wiki"
     command = [
         "wget",
         "--timeout=5",
@@ -49,8 +52,19 @@ def _wget_wiki_urls():
         "/dev/null",
     ]
 
-    result = subprocess.run(command, check=False)
-    return result.returncode
+    subprocess.run(command, check=False)
+
+
+def get_wiki_warc():
+    wiki_warc_path = _ROOT_PATH / "sampled_wiki.warc.gz"
+    if not wiki_warc_path.exists():
+        wget_wiki_urls()
+    return wiki_warc_path
+
+
+def get_cc_warc():
+    cc_warc_path = get_shared_assets_path() / "CC" / "example.warc.gz"
+    return cc_warc_path
 
 
 def get_htlm_texts_form_warc(warc_path: Path | str):
@@ -66,13 +80,45 @@ def get_htlm_texts_form_warc(warc_path: Path | str):
                 yield text
 
 
+def label_text(source: str, text: str):
+    """
+    Label the text based on the source.
+    """
+    label = "__label__negative" if source == "cc" else "__label__positive"
+    return f"{label} {text.replace('\n', ' ')}"
+
+
+def get_train_set():
+
+    train_set_path = _ROOT_PATH / "train_set.txt"
+    if train_set_path.exists():
+        return train_set_path
+
+    cc_warc_path = get_cc_warc()
+    wiki_warc_path = get_wiki_warc()
+
+    cc_texts = get_htlm_texts_form_warc(cc_warc_path)
+    wiki_texts = get_htlm_texts_form_warc(wiki_warc_path)
+
+    with open(train_set_path, "w") as f:
+        for text in cc_texts:
+            if text is None:
+                continue
+            f.write(label_text("cc", text) + "\n")
+        for text in wiki_texts:
+            if text is None:
+                continue
+            f.write(label_text("wiki", text) + "\n")
+
+
 def run():
     """
     Run the script.
     """
-    wiki_warc_path = _ROOT_PATH / "subsampled_wiki.warc.gz"
-    if not wiki_warc_path.exists():
-        _wget_wiki_urls()
+    train_set_path = get_train_set()
+    model = fasttext.train_supervised(input=train_set_path)
+    model.save_model(_ROOT_PATH / "quality_classifier.bin")
+    print("Model saved to quality_classifier.bin")
 
 
 if __name__ == "__main__":

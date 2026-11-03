@@ -1,6 +1,5 @@
 from nltk.tokenize import word_tokenize
 
-_SEED = 336
 _MIN_WORDS = 50
 _MAX_WORDS = 100_000
 _MIN_MEAN_WORD_LENGTH = 3.0

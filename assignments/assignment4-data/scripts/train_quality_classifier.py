@@ -16,7 +16,7 @@ _ROOT_PATH = Path("data/quality_classifier_data")
 _ROOT_PATH.mkdir(parents=True, exist_ok=True)
 
 _SEED = 336
-_NUM_WIKI_URLS = 1000
+_NUM_WIKI_URLS = 10000
 
 random.seed(_SEED)
 

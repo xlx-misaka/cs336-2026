@@ -9,8 +9,7 @@ from more_itertools import sample
 
 from cs336_data.common import get_shared_assets_path
 from cs336_data.extract_text import extract_text_from_html_bytes
-from cs336_data.harmful_content import classify_nsfw, classify_toxic_speech
-from cs336_data.quality import gopher_quality_filter
+from cs336_data.language_identification import identify_language
 
 _ROOT_PATH = Path("data/quality_classifier_data")
 _ROOT_PATH.mkdir(parents=True, exist_ok=True)
@@ -75,7 +74,7 @@ def get_cc_warc():
     return cc_warc_path
 
 
-def get_htlm_texts_form_warc(warc_path: Path | str):
+def get_htlm_en_texts_form_warc(warc_path: Path | str):
     """
     Get the HTML bytes from a WARC file.
     """
@@ -83,33 +82,23 @@ def get_htlm_texts_form_warc(warc_path: Path | str):
     with open(warc_path, "rb") as f:
         for record in ArchiveIterator(f):
             if record.record_type == WarcRecordType.response and record.http_content_type == "text/html":
+                if not record.http_headers or record.http_headers.status_code != 200:
+                    continue
                 html_bytes = record.reader.read()
                 text = extract_text_from_html_bytes(html_bytes)
-                if text is not None and text.strip():
+                if text is None or not text.strip():
+                    continue
+                label, score = identify_language(text)
+                if label == "en" and score > 0.7:
                     yield text
 
 
 def label_text(source: str, text: str):
     """
-    Label the text
-    """
-    label = "__label__low-quality"
-
-    if source == "wiki" and gopher_quality_filter(text):
-        label_nsfw, score_nsfw = classify_nsfw(text)
-        label_toxic, score_toxic = classify_toxic_speech(text)
-        if label_nsfw == "non-nsfw" and label_toxic == "non-toxic" and score_nsfw > 0.5 and score_toxic > 0.5:
-            label = "__label__high-quality"
-
-    return f"{label} {text.replace('\n', ' ')}"
-
-
-def label_text_by_src(source: str, f: str):
-    """
     Label the text by source.
     """
     label = "__label__low-quality" if source == "cc" else "__label__high-quality"
-    return f"{label} {f.replace('\n', ' ')}"
+    return f"{label} {text.replace('\n', ' ')}"
 
 
 def get_data_set():
@@ -122,18 +111,18 @@ def get_data_set():
     cc_warc_path = get_cc_warc()
     wiki_warc_path = get_wiki_warc()
 
-    cc_texts = get_htlm_texts_form_warc(cc_warc_path)
-    wiki_texts = get_htlm_texts_form_warc(wiki_warc_path)
+    cc_texts = get_htlm_en_texts_form_warc(cc_warc_path)
+    wiki_texts = get_htlm_en_texts_form_warc(wiki_warc_path)
     generator = random.Random(_SEED)
     with open(train_set_path, "w") as train_set_file, open(valid_set_path, "w") as valid_set_file:
         for text in cc_texts:
-            text = label_text_by_src("cc", text)
+            text = label_text("cc", text)
             if generator.random() < 0.2:
                 valid_set_file.write(text + "\n")
             else:
                 train_set_file.write(text + "\n")
         for text in wiki_texts:
-            text = label_text_by_src("wiki", text)
+            text = label_text("wiki", text)
             if generator.random() < 0.2:
                 valid_set_file.write(text + "\n")
             else:

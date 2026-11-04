@@ -1,7 +1,6 @@
 import gzip
 import random
 import subprocess
-from itertools import chain
 from pathlib import Path
 
 import fasttext

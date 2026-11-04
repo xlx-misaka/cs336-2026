@@ -1,6 +1,7 @@
 import gzip
 import random
 import subprocess
+from itertools import chain
 from pathlib import Path
 
 import fasttext
@@ -14,7 +15,7 @@ _ROOT_PATH = Path("data/quality_classifier_data")
 _ROOT_PATH.mkdir(parents=True, exist_ok=True)
 
 _SEED = 336
-_NUM_WIKI_URLS = 5
+_NUM_WIKI_URLS = 1000
 
 random.seed(_SEED)
 
@@ -56,6 +57,9 @@ def wget_wiki_urls():
 
 
 def get_wiki_warc():
+    """
+    get the WARC file from the Common Crawl dataset.
+    """
     wiki_warc_path = _ROOT_PATH / "sampled_wiki.warc.gz"
     if not wiki_warc_path.exists():
         wget_wiki_urls()
@@ -63,6 +67,9 @@ def get_wiki_warc():
 
 
 def get_cc_warc():
+    """
+    get the Common Crawl WARC file.
+    """
     cc_warc_path = get_shared_assets_path() / "CC" / "example.warc.gz"
     return cc_warc_path
 
@@ -88,37 +95,47 @@ def label_text(source: str, text: str):
     return f"{label} {text.replace('\n', ' ')}"
 
 
-def get_train_set():
-
+def get_data_set():
+    """
+    Generate a data set from the CC and Wiki WARC files.
+    """
     train_set_path = _ROOT_PATH / "train_set.txt"
-    if train_set_path.exists():
-        return train_set_path
+    valid_set_path = _ROOT_PATH / "valid_set.txt"
+    if train_set_path.exists() and valid_set_path.exists():
+        return train_set_path, valid_set_path
 
     cc_warc_path = get_cc_warc()
     wiki_warc_path = get_wiki_warc()
 
     cc_texts = get_htlm_texts_form_warc(cc_warc_path)
     wiki_texts = get_htlm_texts_form_warc(wiki_warc_path)
+    generator = random.Random()
+    with open(train_set_path, "w") as train_set_file, open(valid_set_path, "w") as valid_set_file:
+        for text in chain(cc_texts, wiki_texts):
+            if text is None:
+                continue
+            if generator.random() < 0.2:
+                valid_set_file.write(text + "\n")
+            else:
+                train_set_file.write(text + "\n")
 
-    with open(train_set_path, "w") as f:
-        for text in cc_texts:
-            if text is None:
-                continue
-            f.write(label_text("cc", text) + "\n")
-        for text in wiki_texts:
-            if text is None:
-                continue
-            f.write(label_text("wiki", text) + "\n")
+    return train_set_path, valid_set_path
 
 
 def run():
     """
     Run the script.
     """
-    train_set_path = get_train_set()
-    model = fasttext.train_supervised(input=train_set_path)
-    model.save_model(_ROOT_PATH / "quality_classifier.bin")
+    train_set_path, valid_set_path = get_data_set()
+    model = fasttext.train_supervised(input=str(train_set_path))
+    print("=" * 80)
+    model.save_model(str(_ROOT_PATH / "quality_classifier.bin"))
     print("Model saved to quality_classifier.bin")
+
+    print("=" * 80)
+    n, precision, recall = model.test(valid_set_path)
+    print(f"Test results: n={n}, precision={precision}, recall={recall}")
+    print("=" * 80)
 
 
 if __name__ == "__main__":

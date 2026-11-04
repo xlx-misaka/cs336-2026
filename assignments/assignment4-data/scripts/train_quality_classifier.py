@@ -9,6 +9,8 @@ from more_itertools import sample
 
 from cs336_data.common import get_shared_assets_path
 from cs336_data.extract_text import extract_text_from_html_bytes
+from cs336_data.harmful_content import classify_nsfw, classify_toxic_speech
+from cs336_data.quality import gopher_quality_filter
 
 _ROOT_PATH = Path("data/quality_classifier_data")
 _ROOT_PATH.mkdir(parents=True, exist_ok=True)
@@ -91,7 +93,14 @@ def label_text(source: str, text: str):
     """
     Label the text based on the source.
     """
-    label = "__label__negative" if source == "cc" else "__label__positive"
+    label = "__label__low-quality"
+
+    if source == "wiki" and gopher_quality_filter(text):
+        label_nsfw, score_nsfw = classify_nsfw(text)
+        label_toxic, score_toxic = classify_toxic_speech(text)
+        if label_nsfw == "non-nsfw" and label_toxic == "non-toxic" and score_nsfw > 0.5 and score_toxic > 0.5:
+            label = "__label__high-quality"
+
     return f"{label} {text.replace('\n', ' ')}"
 
 

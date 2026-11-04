@@ -91,7 +91,7 @@ def get_htlm_texts_form_warc(warc_path: Path | str):
 
 def label_text(source: str, text: str):
     """
-    Label the text based on the source.
+    Label the text
     """
     label = "__label__low-quality"
 
@@ -102,6 +102,14 @@ def label_text(source: str, text: str):
             label = "__label__high-quality"
 
     return f"{label} {text.replace('\n', ' ')}"
+
+
+def label_text_by_src(source: str, f: str):
+    """
+    Label the text by source.
+    """
+    label = "__label__low-quality" if source == "cc" else "__label__high-quality"
+    return f"{label} {f.replace('\n', ' ')}"
 
 
 def get_data_set():
@@ -119,13 +127,13 @@ def get_data_set():
     generator = random.Random(_SEED)
     with open(train_set_path, "w") as train_set_file, open(valid_set_path, "w") as valid_set_file:
         for text in cc_texts:
-            text = label_text("cc", text)
+            text = label_text_by_src("cc", text)
             if generator.random() < 0.2:
                 valid_set_file.write(text + "\n")
             else:
                 train_set_file.write(text + "\n")
         for text in wiki_texts:
-            text = label_text("wiki", text)
+            text = label_text_by_src("wiki", text)
             if generator.random() < 0.2:
                 valid_set_file.write(text + "\n")
             else:

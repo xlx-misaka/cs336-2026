@@ -16,8 +16,8 @@ _ROOT_PATH.mkdir(parents=True, exist_ok=True)
 
 _SEED = 336
 _MAX_NUM_WIKI_URLS = 10000
-_MAX_NUM_WIKI_TEXTS = 1000
-_MAX_NUM_CC_TEXTS = 1000
+_MAX_NUM_WIKI_TEXTS = 4000
+_MAX_NUM_CC_TEXTS = 4000
 
 random.seed(_SEED)
 

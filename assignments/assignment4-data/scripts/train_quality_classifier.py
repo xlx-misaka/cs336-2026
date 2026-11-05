@@ -15,7 +15,9 @@ _ROOT_PATH = Path("data/quality_classifier_data")
 _ROOT_PATH.mkdir(parents=True, exist_ok=True)
 
 _SEED = 336
-_NUM_WIKI_URLS = 10000
+_MAX_NUM_WIKI_URLS = 10000
+_MAX_NUM_WIKI_TEXTS = 1000
+_MAX_NUM_CC_TEXTS = 1000
 
 random.seed(_SEED)
 
@@ -27,7 +29,7 @@ def get_wiki_urls():
     wiki_path = get_shared_assets_path() / "wiki" / "enwiki-20260501-extracted_urls.txt.gz"
     with gzip.open(wiki_path, mode="rt", encoding="utf-8") as file:
         iterator = iter(file)
-        selected_urls = sample(iterator, _NUM_WIKI_URLS)
+        selected_urls = sample(iterator, _MAX_NUM_WIKI_URLS)
 
     saved_path = _ROOT_PATH / "sampled_wiki_urls.txt"
     with open(saved_path, mode="w", encoding="utf-8") as file:
@@ -114,14 +116,22 @@ def get_data_set():
     cc_texts = get_htlm_en_texts_form_warc(cc_warc_path)
     wiki_texts = get_htlm_en_texts_form_warc(wiki_warc_path)
     generator = random.Random(_SEED)
+    cnt_cc = 0
+    cnt_wiki = 0
     with open(train_set_path, "w") as train_set_file, open(valid_set_path, "w") as valid_set_file:
         for text in cc_texts:
+            if cnt_cc == _MAX_NUM_CC_TEXTS:
+                break
+            cnt_cc += 1
             text = label_text("cc", text)
             if generator.random() < 0.2:
                 valid_set_file.write(text + "\n")
             else:
                 train_set_file.write(text + "\n")
         for text in wiki_texts:
+            if cnt_wiki == _MAX_NUM_WIKI_TEXTS:
+                break
+            cnt_wiki += 1
             text = label_text("wiki", text)
             if generator.random() < 0.2:
                 valid_set_file.write(text + "\n")

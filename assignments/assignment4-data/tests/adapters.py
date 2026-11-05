@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from cs336_data.deduplication import exact_deduplication
 from cs336_data.extract_text import extract_text_from_html_bytes
 from cs336_data.harmful_content import classify_nsfw, classify_toxic_speech
 from cs336_data.language_identification import identify_language
@@ -47,7 +48,7 @@ def run_gopher_quality_filter(text: str) -> bool:
 
 
 def run_exact_line_deduplication(input_files: list[os.PathLike], output_directory: os.PathLike):
-    raise NotImplementedError
+    exact_deduplication(input_files, output_directory)
 
 
 def run_minhash_deduplication(

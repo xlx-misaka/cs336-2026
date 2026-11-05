@@ -11,9 +11,8 @@ def exact_deduplication(input_files: list[os.PathLike], output_directory: os.Pat
                 cnt[hash(line)] += 1
 
     for file in input_files:
-        with open(file) as f:
+        with open(file) as f, open(os.path.join(output_directory, os.path.basename(file)), "w") as out_f:
             for line in f:
                 if cnt[hash(line)] > 1:
                     line = ""
-                with open(os.path.join(output_directory, os.path.basename(file)), "a") as out_f:
-                    out_f.write(line)
+                out_f.write(line)

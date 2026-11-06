@@ -51,16 +51,16 @@ def minhash_deduplication(
     uf = _UnionFind(len(input_files))
     for bucket in buckets:
         for file_indices in bucket.values():
-            for i in range(len(file_indices)):
-                for j in range(i + 1, len(file_indices)):
-                    with open(input_files[file_indices[i]]) as f1, open(input_files[file_indices[j]]) as f2:
-                        text1 = _norm_text(f1.read())
-                        text2 = _norm_text(f2.read())
-                        if (
-                            _jaccard(_get_n_gram_set(text1, ngrams), _get_n_gram_set(text2, ngrams))
-                            >= jaccard_threshold
-                        ):
-                            uf.merge(file_indices[i], file_indices[j])
+            if len(file_indices) < 2:
+                continue
+            n_gram_sets = []
+            for file_index in file_indices:
+                with open(input_files[file_index]) as f:
+                    n_gram_sets.append(_get_n_gram_set(_norm_text(f.read()), ngrams))
+            for i in range(len(n_gram_sets) - 1):
+                for j in range(i + 1, len(n_gram_sets)):
+                    if _jaccard(n_gram_sets[i], n_gram_sets[j]) >= jaccard_threshold:
+                        uf.merge(file_indices[i], file_indices[j])
 
     for file_index, parent_index in enumerate(uf.parent):
         if file_index == parent_index:

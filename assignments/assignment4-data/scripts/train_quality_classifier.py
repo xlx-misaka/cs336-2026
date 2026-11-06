@@ -1,3 +1,40 @@
+# 质量分类器训练记录（静态快照，评估时间：2026-11-06 10:37，Asia/Shanghai）
+#
+# 数据来源与处理：
+# - 正样本：Wikipedia 引用的外部网页，标签 __label__high-quality。
+# - 负样本：local-shared-data/CC/example.warc.gz，标签 __label__low-quality。
+# - 保留 HTTP 200 的 text/html 响应，经正文提取后非空，语言为 en 且分数 > 0.7。
+# - 标签按来源生成；当前训练数据未应用 Gopher、NSFW、toxic 过滤或正文去重。
+# - 抽样 URL 数为 10,000；每类文本上限为 4,000，实际为 CC 4,000、Wiki 3,622。
+# - 数据随机种子为 336；逐文档以 0.2 的概率分入验证集，未按域名分组。
+#
+# 实际数据规模：
+#                    CC（负）    Wiki（正）    合计
+#   训练集             3,244       2,901       6,145
+#   验证集               756         721       1,477
+#   总计               4,000       3,622       7,622
+#
+# 训练配置与产物：
+# - 调用 fasttext.train_supervised，未显式覆盖训练超参数。
+# - 当前模型：dim=100，epoch=5，wordNgrams=1，minCount=1，loss=softmax。
+# - 不使用字符 n-gram（minn=0，maxn=0）；模型训练 seed 未在脚本中显式指定。
+# - 模型：data/quality_classifier_data/quality_classifier.bin，约 221 MiB。
+# - 模型文件最后修改时间：2026-11-05 23:42:13（Asia/Shanghai）。
+#
+# 实测结果（根据来源标签评估，不代表人工确认的文本质量）：
+# - 训练集准确率：82.69%；验证集准确率：81.79%；多数类基线：51.18%。
+# - 验证集高质量类：Precision=80.13%，Recall=83.36%，F1=81.71%。
+# - 验证集混淆计数：Wiki->Wiki 601，Wiki->CC 120，CC->Wiki 149，CC->CC 607。
+# - uv run pytest -k test_classify_quality：通过（sanity check）。
+#
+# 本次评估发现的数据局限：
+# - 训练集有 232 条额外的完全重复正文记录，以及 2 种正文存在正负标签冲突。
+# - 训练与验证共享 13 种完全相同的正文，影响 62 条验证记录（约 4.2%）。
+# - 排除与训练正文完全重复的验证记录后，准确率为 81.55%。
+# - 正样本中仍有网络验证、页面迁移、域名过期等缺乏有效正文的页面。
+#
+# 此注释不会自动更新；更换数据、训练配置或模型后，应重新评估并更新记录。
+
 import gzip
 import random
 import subprocess

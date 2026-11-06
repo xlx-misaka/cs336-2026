@@ -1,24 +1,28 @@
 import gzip
 import shutil
 import tempfile
-import urllib.request
+from collections.abc import Callable
 from functools import cached_property
 from io import BytesIO
 from pathlib import Path
 
-from collections.abc import Callable
-import fasttext
 import modal
 import polars as pl
+from furu import Furu
 from warcio.archiveiterator import ArchiveIterator
 from warcio.warcwriter import WARCWriter
 
 from cs336_data.common import get_shared_assets_path
+from cs336_data.download_utils import download_gzip_with_retries
+from cs336_data.language_identification import identify_language
 from cs336_data.modal_utils import VOLUME_MOUNTS, app, build_image
-from furu import Furu
 
 BASE_URL = "https://data.commoncrawl.org/"
 
+
+def _is_english(text):
+    label, score = identify_language(text)
+    return label == "en" and score >= 0.7
 
 
 class _EnglishWetFile(Furu[Path]):
@@ -26,10 +30,15 @@ class _EnglishWetFile(Furu[Path]):
 
     def _create(self) -> Path:
         output_path = self.data_dir / "data.warc.wet.gz"
+        # Large WET downloads must not accumulate in a small /tmp tmpfs.
+        cache_dir = get_shared_assets_path() / "wet-download-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.logger.info("Loading English language identifier")
-        is_english: Callable[[str], bool] = "TODO"
-        assert is_english != "TODO", "you need to implement is_english. we use probability >= 0.7 with https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
+        is_english: Callable[[str], bool] = _is_english
+        assert is_english != "TODO", (
+            "you need to implement is_english. we use probability >= 0.7 with https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
+        )
 
         total_text = 0
         skipped_text = 0
@@ -37,7 +46,7 @@ class _EnglishWetFile(Furu[Path]):
 
         with tempfile.NamedTemporaryFile(
             delete=False,
-            dir="/tmp",
+            dir=cache_dir,
             suffix=f".{output_path.name}",
         ) as temp_output_file:
             temp_output_path = Path(temp_output_file.name)
@@ -45,12 +54,8 @@ class _EnglishWetFile(Furu[Path]):
         with gzip.open(temp_output_path, "wb") as output_stream:
             writer = WARCWriter(output_stream, gzip=False)
             for wet_url in self.chunk_urls:
-                local_wet_path = Path("/tmp") / wet_url.split("/")[-1]
-                if not local_wet_path.exists():
-                    self.logger.info("Downloading %s to %s", wet_url, local_wet_path)
-                    urllib.request.urlretrieve(wet_url, local_wet_path)
-                else:
-                    self.logger.info("Using cached WET file %s", local_wet_path)
+                local_wet_path = cache_dir / wet_url.split("/")[-1]
+                download_gzip_with_retries(wet_url, local_wet_path, logger=self.logger)
                 with gzip.open(local_wet_path, "rb") as input_stream:
                     for rec in ArchiveIterator(input_stream):
                         if rec.rec_type != "conversion":

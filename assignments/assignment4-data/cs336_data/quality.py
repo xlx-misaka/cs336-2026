@@ -41,6 +41,12 @@ def gopher_quality_filter(text: str) -> bool:
 
 
 def classify_quality(text: str) -> tuple[Any, float]:
+    """
+    Classify the quality of the given text.
+    Returns a tuple of the source and the score.
+    The source can be "cc" for Common Crawl or "wiki" for Wikipedia.
+    The score is a float between 0 and 1.
+    """
     classifier = _load_quality_classifier()
     labels, scores = classifier.predict(text.replace("\n", " "), k=1)
     assert len(labels) > 0

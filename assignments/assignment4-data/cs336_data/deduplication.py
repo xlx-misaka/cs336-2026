@@ -48,7 +48,7 @@ def minhash_deduplication(
                     buckets[band_index][key] = []
                 buckets[band_index][key].append(file_index)
 
-    uf = UnionFind(len(input_files))
+    uf = _UnionFind(len(input_files))
     for bucket in buckets:
         for file_indices in bucket.values():
             for i in range(len(file_indices)):
@@ -119,7 +119,7 @@ def _jaccard(ngram_set1: set[str], ngram_set2: set[str]) -> float:
     return intersection / union
 
 
-class UnionFind:
+class _UnionFind:
     def __init__(self, n):
         self.parent = list(range(n))
 

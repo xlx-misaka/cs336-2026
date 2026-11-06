@@ -48,7 +48,27 @@ def minhash_deduplication(
                     buckets[band_index][key] = []
                 buckets[band_index][key].append(file_index)
 
- 
+    uf = UnionFind(len(input_files))
+    for bucket in buckets:
+        for file_indices in bucket.values():
+            for i in range(len(file_indices)):
+                for j in range(i + 1, len(file_indices)):
+                    with open(input_files[file_indices[i]]) as f1, open(input_files[file_indices[j]]) as f2:
+                        text1 = _norm_text(f1.read())
+                        text2 = _norm_text(f2.read())
+                        if (
+                            _jaccard(_get_n_gram_set(text1, ngrams), _get_n_gram_set(text2, ngrams))
+                            >= jaccard_threshold
+                        ):
+                            uf.merge(file_indices[i], file_indices[j])
+
+    for file_index, parent_index in enumerate(uf.parent):
+        if file_index == parent_index:
+            with (
+                open(os.path.join(output_directory, os.path.basename(input_files[file_index])), "w") as out_f,
+                open(input_files[file_index]) as in_f,
+            ):
+                out_f.write(in_f.read())
 
 
 def _norm_text(text: str) -> str:
@@ -97,3 +117,19 @@ def _jaccard(ngram_set1: set[str], ngram_set2: set[str]) -> float:
     intersection = len(ngram_set1 & ngram_set2)
     union = len(ngram_set1 | ngram_set2)
     return intersection / union
+
+
+class UnionFind:
+    def __init__(self, n):
+        self.parent = list(range(n))
+
+    def find(self, a):
+        acopy = a
+        while a != self.parent[a]:
+            a = self.parent[a]
+        while acopy != a:
+            self.parent[acopy], acopy = a, self.parent[acopy]
+        return a
+
+    def merge(self, a, b):
+        self.parent[self.find(b)] = self.find(a)

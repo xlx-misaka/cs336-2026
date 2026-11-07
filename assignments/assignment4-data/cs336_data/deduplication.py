@@ -41,6 +41,8 @@ def minhash_deduplication(
         with open(input_path) as f:
             text = _norm_text(f.read())
             ngram_set = _get_n_gram_set(text, ngrams)
+            if ngram_set is None:
+                continue
             minhashes = _minhash(ngram_set, num_hashes)
             for band_index in range(num_bands):
                 key = tuple(minhashes[band_index * r : (band_index + 1) * r])
@@ -82,13 +84,13 @@ def _norm_text(text: str) -> str:
     return " ".join(text.split())
 
 
-def _get_n_gram_set(text: str, n: int) -> set[str]:
+def _get_n_gram_set(text: str, n: int) -> set[str] | None:
     """
     Generates n-grams from the given text.
     """
     words = text.split(" ")
     if len(words) < n or not text:
-        raise ValueError(f"Text must contain at least {n} words")
+        return None
     return {" ".join(words[i : i + n]) for i in range(len(words) - n + 1)}
 
 

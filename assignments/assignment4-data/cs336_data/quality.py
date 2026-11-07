@@ -3,6 +3,8 @@ from typing import Any
 import fasttext
 from nltk.tokenize import word_tokenize
 
+from cs336_data.common import get_shared_assets_path
+
 _MIN_WORDS = 50
 _MAX_WORDS = 100_000
 _MIN_MEAN_WORD_LENGTH = 3.0
@@ -61,6 +63,6 @@ def _load_quality_classifier():
     if _QUALITY_CLASSIFIER is not None:
         return _QUALITY_CLASSIFIER
 
-    path = "data/quality_classifier_data/quality_classifier.bin"
-    _QUALITY_CLASSIFIER = fasttext.load_model(path)
+    path = get_shared_assets_path() / "classifiers" / "quality_classifier.bin"
+    _QUALITY_CLASSIFIER = fasttext.load_model(str(path))
     return _QUALITY_CLASSIFIER

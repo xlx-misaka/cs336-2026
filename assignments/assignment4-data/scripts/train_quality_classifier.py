@@ -18,7 +18,7 @@
 # - 调用 fasttext.train_supervised，未显式覆盖训练超参数。
 # - 当前模型：dim=100，epoch=5，wordNgrams=1，minCount=1，loss=softmax。
 # - 不使用字符 n-gram（minn=0，maxn=0）；模型训练 seed 未在脚本中显式指定。
-# - 模型：data/quality_classifier_data/quality_classifier.bin，约 221 MiB。
+# - 模型（当前存放位置）：local-shared-data/classifiers/quality_classifier.bin，约 221 MiB。
 # - 模型文件最后修改时间：2026-11-05 23:42:13（Asia/Shanghai）。
 #
 # 实测结果（根据来源标签评估，不代表人工确认的文本质量）：
@@ -48,8 +48,9 @@ from cs336_data.common import get_shared_assets_path
 from cs336_data.extract_text import extract_text_from_html_bytes
 from cs336_data.language_identification import identify_language
 
-_ROOT_PATH = Path("data/quality_classifier_data")
+_ROOT_PATH = get_shared_assets_path() / "wiki"
 _ROOT_PATH.mkdir(parents=True, exist_ok=True)
+_MODEL_PATH = get_shared_assets_path() / "classifiers" / "quality_classifier.bin"
 
 _SEED = 336
 _MAX_NUM_WIKI_URLS = 10000
@@ -185,8 +186,9 @@ def run():
     train_set_path, valid_set_path = get_data_set()
     model = fasttext.train_supervised(input=str(train_set_path))
     print("=" * 80)
-    model.save_model(str(_ROOT_PATH / "quality_classifier.bin"))
-    print("Model saved to quality_classifier.bin")
+    _MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    model.save_model(str(_MODEL_PATH))
+    print(f"Model saved to {_MODEL_PATH}")
 
     print("=" * 80)
     n, precision, recall = model.test(str(valid_set_path))

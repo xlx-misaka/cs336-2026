@@ -8,7 +8,6 @@ from pathlib import Path
 
 import modal
 import polars as pl
-from furu import Furu
 from warcio.archiveiterator import ArchiveIterator
 from warcio.warcwriter import WARCWriter
 
@@ -16,6 +15,7 @@ from cs336_data.common import get_shared_assets_path
 from cs336_data.download_utils import download_gzip_with_retries
 from cs336_data.language_identification import identify_language
 from cs336_data.modal_utils import VOLUME_MOUNTS, app, build_image
+from furu import Furu
 
 BASE_URL = "https://data.commoncrawl.org/"
 
@@ -91,7 +91,7 @@ def make_wet_file_on_modal(wet_file: _EnglishWetFile) -> Path:
 
 
 class EnglishWetFiles(Furu[list[Path]]):
-    n_files: int = 2500
+    n_files: int = 128
     group_size: int = 4
     shuffle_seed: int = 336
     crawl_id: str = "CC-MAIN-2026-17"

@@ -1,15 +1,18 @@
 import concurrent.futures
 import json
 from collections import Counter
+from contextlib import ExitStack
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
 from fastwarc import ArchiveIterator, WarcRecordType
 from tqdm import tqdm
 
 from cs336_data.common import get_shared_assets_path
-from cs336_data.deduplication import exact_deduplication, minhash_deduplication
+from cs336_data.deduplication import _get_n_gram_set, _jaccard, _minhash, _norm_text, _UnionFind
 from cs336_data.harmful_content import classify_nsfw, classify_toxic_speech
 from cs336_data.mask_pii import mask_emails, mask_ips, mask_phone_numbers
 from cs336_data.quality import classify_quality, gopher_quality_filter
@@ -35,6 +38,7 @@ NUM_HASHES = 100
 NUM_BANDS = 10
 NGRAMS = 5
 JACCARD_THRESHOLD = 0.8
+TEXT_FORMAT = "one_document_per_line"
 
 
 def get_wet_pathes():
@@ -97,23 +101,26 @@ def filter_text(text: str, counts: Counter[str] | None = None):
     return text
 
 
-def process_single_wet(wet_index: int, wet_path, output_root: Path):
-    """Process a single WET file."""
+def process_single_wet(wet_index: int, wet_path, output_root: Path, raw_directory: Path):
+    """Write TXT shards and temporarily retain original document line breaks."""
     output_dir = output_root / "filtered"
     output_dir.mkdir(parents=True, exist_ok=True)
-    texts_iter = load_texts_from_wet(wet_path)
-    output_pathes = []
+    output_path = output_dir / f"wet_{wet_index:04d}.txt"
+    raw_path = raw_directory / f"wet_{wet_index:04d}.jsonl"
     counts = Counter()
-    for text_index, text in enumerate(texts_iter):
-        text = filter_text(text, counts)
-        if text:
-            text_name = f"wet_{wet_index:04d}_text_{text_index:04d}.txt"
-            with open(output_dir / text_name, "w") as f:
-                f.write(text)
-                output_pathes.append(output_dir / text_name)
+    with (
+        output_path.open("w", encoding="utf-8", newline="\n") as output_file,
+        raw_path.open("w", encoding="utf-8") as raw_file,
+    ):
+        for text in load_texts_from_wet(wet_path):
+            text = filter_text(text, counts)
+            if text is not None:
+                raw_file.write(json.dumps(text, ensure_ascii=False) + "\n")
+                output_file.write(" ".join(text.splitlines()).strip() + "\n")
     print(f"WET {wet_index}: kept {counts['kept_documents']}/{counts['input_documents']} documents.")
     return {
-        "paths": output_pathes,
+        "path": output_path,
+        "raw_path": raw_path,
         "wet_index": wet_index,
         "wet_path": str(wet_path),
         "counts": dict(counts),
@@ -156,32 +163,103 @@ def _filter_stage_stats(counts):
     return stages
 
 
-def _exact_stage_stats(input_files, output_directory):
-    """Measure text changes separately from document removals."""
-    modified = removed_lines = removed_characters = 0
-    empty_names = set()
+def _read_raw_documents(path):
+    with path.open(encoding="utf-8") as source:
+        for record in source:
+            yield json.loads(record)
+
+
+def _exact_line_deduplication(input_files, output_directory):
+    """Keep only corpus-unique original lines, then serialize one document per TXT line."""
+    output_directory.mkdir(parents=True, exist_ok=True)
+    line_counts = Counter()
     for path in input_files:
-        before = path.read_text(encoding="utf-8")
-        after = (output_directory / path.name).read_text(encoding="utf-8")
-        modified += int(before != after)
-        before_lines = before.count("\n") + int(bool(before) and not before.endswith("\n"))
-        after_lines = after.count("\n") + int(bool(after) and not after.endswith("\n"))
-        removed_lines += before_lines - after_lines
-        removed_characters += len(before) - len(after)
-        if not after.strip():
-            empty_names.add(path.name)
-    return (
-        _stage_stats(
-            "exact_line_deduplication",
-            len(input_files),
-            len(input_files),
-            modified_documents=modified,
-            removed_lines=removed_lines,
-            removed_characters=removed_characters,
-            empty_output_documents=len(empty_names),
-        ),
-        empty_names,
+        for text in _read_raw_documents(path):
+            # Match text-mode file iteration, including universal newline handling.
+            line_counts.update(hash(line) for line in StringIO(text, newline=None))
+
+    documents = modified = removed_lines = removed_characters = empty = 0
+    for path in input_files:
+        with (output_directory / path.with_suffix(".txt").name).open(
+            "w", encoding="utf-8", newline="\n"
+        ) as destination:
+            for text in _read_raw_documents(path):
+                lines = list(StringIO(text, newline=None))
+                unique_lines = [line for line in lines if line_counts[hash(line)] == 1]
+                result = "".join(unique_lines)
+                documents += 1
+                modified += int(len(lines) != len(unique_lines))
+                removed_lines += len(lines) - len(unique_lines)
+                removed_characters += sum(map(len, lines)) - len(result)
+                empty += int(not result.strip())
+                destination.write(" ".join(result.splitlines()).strip() + "\n")
+    return _stage_stats(
+        "exact_line_deduplication",
+        documents,
+        documents,
+        modified_documents=modified,
+        removed_lines=removed_lines,
+        removed_characters=removed_characters,
+        empty_output_documents=empty,
     )
+
+
+def _minhash_document_deduplication(input_files, output_directory):
+    """Reuse document MinHash/Jaccard operations with byte offsets into TXT shards."""
+    if NUM_HASHES <= 0 or NUM_BANDS <= 0 or NUM_HASHES % NUM_BANDS:
+        raise ValueError("NUM_HASHES must be positive and divisible by positive NUM_BANDS")
+    output_directory.mkdir(parents=True, exist_ok=True)
+    rows_per_band = NUM_HASHES // NUM_BANDS
+    # Store only locations, not all documents or all n-gram sets.
+    documents = []
+    for shard_index, path in enumerate(input_files):
+        offset = 0
+        with path.open("rb") as source:
+            for line in source:
+                documents.append((shard_index, offset, len(line)))
+                offset += len(line)
+
+    groups = _UnionFind(len(documents))
+    buckets = [{} for _ in range(NUM_BANDS)]
+    with ExitStack() as stack:
+        sources = [stack.enter_context(path.open("rb")) for path in input_files]
+        destinations = [stack.enter_context((output_directory / path.name).open("wb")) for path in input_files]
+
+        def read_document(index):
+            shard_index, offset, length = documents[index]
+            source = sources[shard_index]
+            source.seek(offset)
+            return source.read(length)
+
+        def read_ngrams(index):
+            return _get_n_gram_set(_norm_text(read_document(index).decode("utf-8")), NGRAMS)
+
+        for index in tqdm(range(len(documents)), desc="MinHash documents", unit="doc"):
+            ngrams = read_ngrams(index)
+            if ngrams is None:
+                continue
+            signature = _minhash(ngrams, NUM_HASHES)
+            candidates = set()
+            for band_index, band in enumerate(buckets):
+                start = band_index * rows_per_band
+                bucket = band.setdefault(tuple(signature[start : start + rows_per_band]), [])
+                candidates.update(bucket)
+                bucket.append(index)
+            # A pair is checked at most once, even if it matched multiple bands.
+            for candidate in sorted(candidates):
+                left, right = groups.find(candidate), groups.find(index)
+                if left == right:
+                    continue
+                other_ngrams = read_ngrams(candidate)
+                if other_ngrams is not None and _jaccard(ngrams, other_ngrams) >= JACCARD_THRESHOLD:
+                    groups.merge(min(left, right), max(left, right))
+
+        kept = 0
+        for index, (shard_index, _, _) in enumerate(documents):
+            if groups.find(index) == index:
+                destinations[shard_index].write(read_document(index))
+                kept += 1
+    return _stage_stats("minhash_document_deduplication", len(documents), kept)
 
 
 def run():
@@ -189,46 +267,43 @@ def run():
     output_root = (
         get_shared_assets_path() / "processed_wet" / datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S")
     )
+    output_root.mkdir(parents=True, exist_ok=True)
     wet_pathes = get_wet_pathes()
-    filtered_text_pathes = []
+    filtered_shards = []
+    raw_shards = []
     counts = Counter()
     per_wet_file = []
-    # Shut down filtering workers before the memory-intensive deduplication stage.
-    with concurrent.futures.ProcessPoolExecutor(max_workers=NUM_CPUS) as executor:
-        futures = [
-            executor.submit(process_single_wet, wet_index, wet_path, output_root)
-            for wet_index, wet_path in enumerate(wet_pathes)
-        ]
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
-            result = future.result()
-            filtered_text_pathes.extend(result["paths"])
-            counts.update(result["counts"])
-            per_wet_file.append({key: result[key] for key in ("wet_index", "wet_path", "counts")})
-
-    assert len(filtered_text_pathes) == counts["kept_documents"]
-    stages = _filter_stage_stats(counts)
     output_dir1 = output_root / "exact_dedup"
-    output_dir1.mkdir(parents=True, exist_ok=True)
-    exact_deduplication(filtered_text_pathes, output_dir1)
-    exact_stats, empty_names = _exact_stage_stats(filtered_text_pathes, output_dir1)
+    # One temporary file per WET preserves paragraph boundaries for both line-counting passes.
+    with TemporaryDirectory(prefix=".raw_documents_", dir=output_root) as temporary:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=NUM_CPUS) as executor:
+            futures = [
+                executor.submit(process_single_wet, wet_index, wet_path, output_root, Path(temporary))
+                for wet_index, wet_path in enumerate(wet_pathes)
+            ]
+            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
+                result = future.result()
+                filtered_shards.append(result["path"])
+                raw_shards.append(result["raw_path"])
+                counts.update(result["counts"])
+                per_wet_file.append({key: result[key] for key in ("wet_index", "wet_path", "counts")})
+
+        # Shut down workers before building the global line counter.
+        exact_stats = _exact_line_deduplication(sorted(raw_shards), output_dir1)
+    filtered_shards.sort()
+    stages = _filter_stage_stats(counts)
+    assert exact_stats["input_documents"] == counts["kept_documents"]
     stages.append(exact_stats)
 
-    exact_deduped_text_pathes = [output_dir1 / Path(text_path).name for text_path in filtered_text_pathes]
+    exact_shards = [output_dir1 / path.name for path in filtered_shards]
     output_dir2 = output_root / "minhash_dedup"
-    output_dir2.mkdir(parents=True, exist_ok=True)
-    minhash_deduplication(exact_deduped_text_pathes, NUM_HASHES, NUM_BANDS, NGRAMS, JACCARD_THRESHOLD, output_dir2)  # type: ignore
-
-    final_paths = [output_dir2 / path.name for path in exact_deduped_text_pathes if (output_dir2 / path.name).is_file()]
-    final_empty = sum(path.name in empty_names for path in final_paths)
-    stages.append(
-        _stage_stats(
-            "minhash_document_deduplication",
-            len(exact_deduped_text_pathes),
-            len(final_paths),
-            empty_output_documents=final_empty,
-        )
-    )
-    total_discarded = counts["input_documents"] - len(final_paths)
+    minhash_stats = _minhash_document_deduplication(exact_shards, output_dir2)
+    assert minhash_stats["input_documents"] == exact_stats["kept_documents"]
+    stages.append(minhash_stats)
+    final_documents = minhash_stats["kept_documents"]
+    # Empty records have no n-grams and are retained by MinHash; tokenization skips them.
+    final_empty = exact_stats["empty_output_documents"]
+    total_discarded = counts["input_documents"] - final_documents
     assert sum(stage["discarded_documents"] for stage in stages) == total_discarded
     for stage in stages:
         stage["discard_contribution_percent"] = (
@@ -241,14 +316,19 @@ def run():
         "output_root": str(output_root.resolve()),
         "input_wet_files": len(wet_pathes),
         "input_documents": counts["input_documents"],
-        "final_output_files": len(final_paths),
+        "text_format": TEXT_FORMAT,
+        "final_output_files": len(filtered_shards),
+        "final_output_documents": final_documents,
         "final_empty_documents": final_empty,
-        "final_nonempty_documents": len(final_paths) - final_empty,
+        "final_nonempty_documents": final_documents - final_empty,
         "total_discarded_documents": total_discarded,
         "counting_notes": {
             "discard_attribution": "First rejecting stage in execution order; each document is counted once.",
             "pii": "Masking changes text without discarding documents; per-type document counts can overlap.",
-            "empty_documents": "Whitespace-only and empty outputs are still retained by the existing pipeline.",
+            "storage": "Each WET produces one TXT shard per stage; each line is one document.",
+            "line_breaks": "Original line breaks are kept temporarily for line deduplication; TXT outputs use spaces.",
+            "exact_deduplication": "Keep only lines occurring once in the filtered corpus; remove all repeated copies.",
+            "empty_documents": "Emptied documents remain as blank records; tokenization skips them.",
             "zero_discards": "Contribution percentages are null when no documents were discarded.",
         },
         "parameters": {
@@ -276,7 +356,9 @@ def run():
         )
     print(f"PII: modified {counts['pii_modified_documents']} documents.")
     print(f"Exact-line deduplication: removed {exact_stats['removed_lines']} lines.")
-    print(f"Final output: {len(final_paths)} files, including {final_empty} empty documents.")
+    print(
+        f"Final output: {final_documents} document records ({final_empty} empty) in {len(filtered_shards)} TXT shards."
+    )
     print(f"Statistics written to {stats_path}")
 
 

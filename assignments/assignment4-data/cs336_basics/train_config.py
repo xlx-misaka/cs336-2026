@@ -1,7 +1,8 @@
 """Personal 36M model experiment for the current 711.5M-token corpus.
 
 This replaces the course model/budget for a personal single-GPU experiment.
-Batch 192 is an unmeasured RTX 6000D (84 GB) trial, not a verified memory maximum.
+Batch 128 is a fallback after batch 192 ran out of memory on RTX 6000D (84 GB).
+The smaller batch still requires a full training and validation memory check.
 See README.md for the original course settings and lower-memory fallbacks.
 """
 
@@ -32,12 +33,12 @@ class TrainingConfig:
     seed: int = 0
     dtype: str = "bfloat16"
     # Large-vocabulary loss dominates memory; test training and validation on the target GPU.
-    train_batch_size: int = 192
-    eval_batch_size: int = 192
+    train_batch_size: int = 128
+    eval_batch_size: int = 128
     train_steps: int = 2_048
-    gradient_accumulation_steps: int = 4  # Effective batch: 192 * 4 = 768 sequences.
+    gradient_accumulation_steps: int = 6  # Effective batch: 128 * 6 = 768 sequences.
     compile: bool = True
-    eval_iterations: int = 128  # 12,582,912 sampled tokens per evaluation.
+    eval_iterations: int = 192  # 12,582,912 sampled tokens per evaluation.
     eval_interval: int = 256
     max_grad_norm: float | None = 1.0
     device: str = "cuda"

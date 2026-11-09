@@ -267,14 +267,14 @@ uv run scripts/tokenize_texts.py \
 | `d_ff` | 768 | 3,072 |
 | 注意力头数 | 4 | 16 |
 | GPU 数量 | 1 张 RTX 6000D（84GB） | 8 张 B200 |
-| `train_batch_size`（每卡小批次） | 192 | 128 |
-| `gradient_accumulation_steps` | 4 | 1 |
+| `train_batch_size`（每卡小批次） | 128 | 128 |
+| `gradient_accumulation_steps` | 6 | 1 |
 | 全局有效 batch（序列） | 768 | 1,024 |
 | `train_steps`（参数更新次数） | 2,048 | 16,384 |
 | 每次更新处理的 token | 393,216 | 524,288 |
 | 累计训练 token | 805,306,368 | 8,589,934,592 |
-| `eval_batch_size` | 192 | 128 |
-| `eval_iterations` | 128 | 1,000 |
+| `eval_batch_size` | 128 | 128 |
+| `eval_iterations` | 192 | 1,000 |
 | 每次验证采样 token | 12,582,912 | 65,536,000 |
 | `eval_interval` | 256 | 2,000 |
 
@@ -284,12 +284,12 @@ uv run scripts/tokenize_texts.py \
 
 ```text
 GPU 数 × train_batch_size × gradient_accumulation_steps × context_length × train_steps
-当前个人单卡：1 × 192 × 4 × 512 × 2,048 = 805,306,368 tokens
+当前个人单卡：1 × 128 × 6 × 512 × 2,048 = 805,306,368 tokens
 ```
 
 当前训练量相当于约 **1.13 倍现有语料量**。这表示累计处理的 token 数，不表示逐篇按顺序训练 1.13 遍。[get_batch](cs336_basics/data.py) 随机选择起点，再读取连续 512 个 token；标签窗口向后移动一位。采样可以重复或重叠，也可能跨越文档 EOS，不能保证覆盖每个原始 token。
 
-每个小批次处理 98,304 tokens；累积 4 个小批次的梯度后才更新一次参数。第一次定期验证在更新索引 256 处，之后每隔 256 步验证，并在训练结束后再次验证。
+每个小批次处理 65,536 tokens；累积 6 个小批次的梯度后才更新一次参数。第一次定期验证在更新索引 256 处，之后每隔 256 步验证，并在训练结束后再次验证。
 
 **当前配置不能直接套用八卡 Modal 命令进行课程正式比较。** 多卡会乘大总训练量，正式比较需同时恢复上表课程模型、每卡 batch、累积次数、训练步数及验证设置。
 
@@ -303,7 +303,7 @@ uv run scripts/train.py \
   --valid-bin local-shared-data/tokenized_paloma_c4_100_domains_validation.bin
 ```
 
-训练数据通过 `np.memmap` 按批读取，不把整个 token 文件一次性放入显存。RTX 6000D（84GB）上的峰值显存和实际训练时长尚未实测，先做训练与验证的短程压测，再投入完整预算。小模型使用较大的 batch 192 作为试跑值；当前 50,257 词表的 logits 及交叉熵 FP32 临时张量会占据大量显存，减小模型不等于可以无限增大 batch。此配置不是已实测的最大吞吐或最大显存配置。若训练显存不足，可退回 `train_batch_size=128`、`gradient_accumulation_steps=6`，更低一档为 `96 × 8`，均保持有效 batch 768；验证显存不足可单独退回 `eval_batch_size=128`、`eval_iterations=192`，保持每次验证采样量。稳定后比较吞吐和峰值显存，并保留临时分配余量。
+训练数据通过 `np.memmap` 按批读取，不把整个 token 文件一次性放入显存。2026-11-09 的 RTX 6000D 试跑中，batch 192 在反向传播时 OOM：日志显示设备总容量 83.05GiB、空闲 15.55GiB，此次申请 18.41GiB；进程占用 67.49GiB，其中 PyTorch 已分配 48.60GiB，另有保留但未分配的 18.33GiB。缓存碎片可能有影响，但日志不能证明唯一原因。当前 50,257 词表的 logits 及交叉熵 FP32 临时张量会占据大量显存，减小模型不等于可以无限增大 batch。默认已降低为 `train_batch_size=128`、`gradient_accumulation_steps=6`，验证使用 `eval_batch_size=128`、`eval_iterations=192`；总训练量和每次验证采样量保持一致。batch 128 尚未在目标 GPU 上复测成功，不是已验证的最大可用配置。若仍 OOM，训练可降为 `96 × 8`，验证可降为 `96 × 256`，分别保持各自预算。完整训练耗时尚未实测，先观察多次完整参数更新和至少一次验证的峰值显存与稳定吞吐。
 
 训练输出路径目前由 `scripts/train.py` 中的 `DEFAULT_MODAL_MODEL_OUTPUT` 固定为 `/root/data/output/your_data`；运行用户需要对此目录有写权限。当前 CLI 不提供训练输出目录或 batch 的覆盖参数，不能只修改 `your_data.yaml` 来改变这些行为。
 

@@ -41,7 +41,7 @@ from cs336_data.deduplication import _get_n_gram_set, _jaccard, _minhash, _norm_
 from cs336_data.harmful_content import classify_nsfw, classify_toxic_speech
 from cs336_data.mask_pii import mask_emails, mask_ips, mask_phone_numbers
 from cs336_data.quality import classify_quality, gopher_quality_filter
-from cs336_data.text_quality import (
+from cs336_data.recall_text import (
     clean_boilerplate,
     is_code_line,
     page_rejection_reason,

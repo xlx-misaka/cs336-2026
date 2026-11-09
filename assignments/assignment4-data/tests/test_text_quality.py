@@ -2,7 +2,7 @@ from collections import Counter
 
 import pytest
 
-from cs336_data.text_quality import clean_boilerplate, page_rejection_reason, text_signals
+from cs336_data.recall_text import clean_boilerplate, page_rejection_reason, text_signals
 from scripts import filter_data as pipeline
 
 ARTICLE = (

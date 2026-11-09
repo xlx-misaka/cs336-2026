@@ -24,12 +24,12 @@ class ModelConfig:
 class TrainingConfig:
     seed: int = 0
     dtype: str = "bfloat16"
-    train_batch_size: int = 128
-    eval_batch_size: int = 128
+    train_batch_size: int = 16
+    eval_batch_size: int = 16
     train_steps: int = 16_384
-    gradient_accumulation_steps: int = 1
+    gradient_accumulation_steps: int = 64
     compile: bool = True
-    eval_iterations: int = 1_000
+    eval_iterations: int = 8_000
     eval_interval: int = 2_000
     max_grad_norm: float | None = 1.0
     device: str = "cuda"

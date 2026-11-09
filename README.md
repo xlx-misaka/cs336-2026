@@ -10,7 +10,7 @@ Stanford CS336「从头构建大语言模型」2026 春季课程资料与作业�
 | [1 · Basics](assignments/assignment1-basics/) | BPE、Transformer、训练循环 | 已完成 |
 | [2 · Systems](assignments/assignment2-systems/) | Triton、Flash Attention、分布式训练 | 已完成 |
 | [3 · Scaling](assignments/assignment3-scaling/) | Scaling laws 实验与拟合 | 未开始 |
-| [4 · Data](assignments/assignment4-data/) | 数据过滤、去重、质量分类 | 未开始 |
+| [4 · Data](assignments/assignment4-data/) | 数据过滤、去重、质量分类 | 已完成 |
 | [5 · Alignment](assignments/assignment5-alignment/) | SFT、RLHF、RLVR | 未开始 |
 
 ## 资料导航

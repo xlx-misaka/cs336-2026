@@ -15,8 +15,23 @@ _MASK_EMAILS_RE = re.compile(
 
 _MASK_PHONES_RE = re.compile(
     r"""
-    (?<![0-9])
+    # Skip complete DOI tokens, including their phone-like numeric suffixes.
+    \b10\.[0-9]{4,9}/[^\s<>"]+(*SKIP)(*FAIL)
+    |
+    (?<![\w+])
     (?:
+        # UK domestic and international numbers: 11 or 10 national digits.
+        (?:(?:\+44|0044)[ \t.-]*(?:\(0\)[ \t.-]*)?|0)
+        [1235789](?:[ \t.-]*[0-9]){9}
+        |
+        # Common UK area codes enclosed in parentheses.
+        \(0[1235789][0-9]{3}\)(?:[ \t.-]*[0-9]){6}
+        |
+        \(0[1235789][0-9]{2}\)(?:[ \t.-]*[0-9]){7}
+        |
+        \(0[12][0-9]\)(?:[ \t.-]*[0-9]){8}
+        |
+        # Existing North American full and local number formats.
         (?:\+?1[ \t.-]*)?
         (?:\([ \t]*[0-9]{3}[ \t]*\)|[0-9]{3})
         [ \t.-]*[0-9]{3}[ \t.-]*[0-9]{4}
@@ -24,7 +39,7 @@ _MASK_PHONES_RE = re.compile(
         [0-9]{3}[ \t.-]+[0-9]{4}
     )
     (?:[ \t]*,?[ \t]*(?:ext(?:ension)?\.?|x|\#)[ \t:]*[0-9]+)?
-    (?![0-9])
+    (?!\w)
     """,
     re.VERBOSE | re.IGNORECASE,
 )
@@ -43,7 +58,7 @@ def mask_emails(text: str) -> tuple[str, int]:
 
 
 def mask_phone_numbers(text: str) -> tuple[str, int]:
-    """Mask all phone numbers in the text."""
+    """Mask common US/UK phone formats while preserving DOI tokens."""
     return _MASK_PHONES_RE.subn("|||PHONE_NUMBER|||", text)
 
 

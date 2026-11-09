@@ -2,15 +2,16 @@
 
 在 assignment4-data 项目根目录运行：
     uv run scripts/tokenize_texts.py
-    uv run scripts/tokenize_texts.py --input-dir path/to/minhash_dedup --output /tmp/train.bin
+    uv run scripts/tokenize_texts.py --input-dir path/to/filtered_corpus/run_id --output /tmp/train.bin
 
-默认读取最近一次已完成过滤的 minhash_dedup/，也可通过 --input-dir 指定。
+默认读取 filtered_corpus/ 中最近一次已完成的运行目录，也可通过 --input-dir 指定。
+若没有新格式运行目录，兼容查找旧 processed_wet/ 下已完成的 minhash_dedup/。
 新格式：每个 JSONL 记录为 {"text": "正文"}，解析后保留正文内部换行、空行和缩进。
 旧格式：按 filter_stats.json 的标记读取一行一文档 TXT；旧的无标记报告按一文件一文档。
 没有报告的 TXT 默认一行一文档。每个目录只应存放一种格式，避免重复读取。
 流程：逐条读取非空正文 → 多进程完整编码 → 每篇追加一个 EOS → uint16.tofile。
 只对正文编码，不把 JSON 字段名、引号或转义符写入模型输入；不对每个正文行追加 EOS。
-默认输出 local-shared-data/tokenized_texts/运行目录名/tokenized_ids.bin，已有同名文件会覆盖。
+默认输出 local-shared-data/tokenized_corpus/运行目录名/tokenized_ids.bin，已有同名文件会覆盖。
 旁边的 tokenized_ids.stats.json 记录非空文档数、包含 EOS 的 token 数和文件字节数。
 每个 token 占两个字节；两个 worker 各加载一次 tokenizer，不汇总全部正文和编码结果到列表。
 """
@@ -54,7 +55,9 @@ def iter_documents(input_dir):
                     if text.strip():
                         yield text
         return
-    stats_path = input_dir.parent / "filter_stats.json"
+    stats_path = input_dir / "filter_stats.json"
+    if not stats_path.is_file():
+        stats_path = input_dir.parent / "filter_stats.json"
     stats = json.loads(stats_path.read_text(encoding="utf-8")) if stats_path.is_file() else {}
     line_documents = not stats or stats.get("text_format") == "one_document_per_line"
     for path in sorted(input_dir.glob("*.txt")):
@@ -77,10 +80,14 @@ def tokenize_text_and_add_eos(text):
 
 
 def _latest_input_dir():
-    processed = get_shared_assets_path() / "processed_wet"
-    candidates = sorted(
-        path for path in processed.glob("*/minhash_dedup") if (path.parent / "filter_stats.json").is_file()
-    )
+    shared = get_shared_assets_path()
+    candidates = sorted(path.parent for path in (shared / "filtered_corpus").glob("*/filter_stats.json"))
+    if not candidates:
+        candidates = sorted(
+            path
+            for path in (shared / "processed_wet").glob("*/minhash_dedup")
+            if (path.parent / "filter_stats.json").is_file()
+        )
     if not candidates:
         raise FileNotFoundError("No completed filtering run found; specify --input-dir.")
     return candidates[-1]
@@ -96,9 +103,8 @@ def run(argv=None):
     input_dir = args.input_dir if args.input_dir is not None else _latest_input_dir()
     if not input_dir.is_dir() or not any(path.suffix in {".jsonl", ".txt"} for path in input_dir.iterdir()):
         raise FileNotFoundError(f"No JSONL or TXT shards found in {input_dir}")
-    output_path = (
-        args.output or get_shared_assets_path() / "tokenized_texts" / input_dir.parent.name / "tokenized_ids.bin"
-    )
+    run_name = input_dir.name if (input_dir / "filter_stats.json").is_file() else input_dir.parent.name
+    output_path = args.output or get_shared_assets_path() / "tokenized_corpus" / run_name / "tokenized_ids.bin"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     tokens = documents = 0

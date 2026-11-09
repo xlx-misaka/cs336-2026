@@ -7,9 +7,9 @@
 输入：furu manifest.json 中列出的英文 WET，以及现有质量、NSFW、Toxic 分类器。
 流程：WET conversion 正文 → Gopher → 质量分类器 → NSFW → Toxic → PII 遮蔽，
       然后跨全部分片进行原始行精确去重、MinHash 文档去重。
-输出：默认 local-shared-data/processed_wet/北京时间戳/，包含 filtered/、
-      exact_dedup/、minhash_dedup/ 和 filter_stats.json。
-每个阶段、每个 WET 对应一个 wet_XXXX.jsonl；每行是 {"text": "正文"}。
+输出：默认 local-shared-data/filtered_corpus/北京时间戳/，仅包含最终的
+      wet_XXXX.jsonl 和 filter_stats.json，每个 WET 对应一个 JSONL 分片。
+每行是 {"text": "正文"}。过滤和精确去重的中间文件使用临时目录，退出时自动清理。
 正文内部换行、空行、制表符由 JSON 转义保存，读取后恢复；正文首尾仍由读取函数 strip。
 精确去重删除所有出现多次的原始行；MinHash 每个连通分组保留最早的一篇。
 去重造成的空正文保留为空记录，分词时跳过；各阶段贡献按首次拒绝的步骤统计。
@@ -24,6 +24,7 @@ from contextlib import ExitStack
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
 from fastwarc import ArchiveIterator, WarcRecordType
@@ -284,34 +285,36 @@ def run(argv=None):
     wet_pathes = get_wet_pathes(args.manifest)
     # Generate one experiment directory in the parent and pass it to every worker.
     output_root = args.output_dir or (
-        get_shared_assets_path() / "processed_wet" / datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S")
+        get_shared_assets_path() / "filtered_corpus" / datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S")
     )
     output_root.mkdir(parents=True, exist_ok=False)
     filtered_shards = []
     counts = Counter()
     per_wet_file = []
-    output_dir1 = output_root / "exact_dedup"
-    with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
-        futures = [
-            executor.submit(process_single_wet, wet_index, wet_path, output_root)
-            for wet_index, wet_path in enumerate(wet_pathes)
-        ]
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
-            result = future.result()
-            filtered_shards.append(result["path"])
-            counts.update(result["counts"])
-            per_wet_file.append({key: result[key] for key in ("wet_index", "wet_path", "counts")})
+    with TemporaryDirectory(prefix=".intermediate_", dir=output_root) as temporary:
+        work_root = Path(temporary)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
+            futures = [
+                executor.submit(process_single_wet, wet_index, wet_path, work_root)
+                for wet_index, wet_path in enumerate(wet_pathes)
+            ]
+            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
+                result = future.result()
+                filtered_shards.append(result["path"])
+                counts.update(result["counts"])
+                per_wet_file.append({key: result[key] for key in ("wet_index", "wet_path", "counts")})
 
-    # Shut down workers before building the global line counter.
-    filtered_shards.sort()
-    exact_stats = _exact_line_deduplication(filtered_shards, output_dir1)
+        # Shut down workers before building the global line counter.
+        filtered_shards.sort()
+        exact_directory = work_root / "exact_dedup"
+        exact_stats = _exact_line_deduplication(filtered_shards, exact_directory)
+        exact_shards = [exact_directory / path.name for path in filtered_shards]
+        minhash_stats = _minhash_document_deduplication(exact_shards, output_root)
+
     stages = _filter_stage_stats(counts)
     assert exact_stats["input_documents"] == counts["kept_documents"]
     stages.append(exact_stats)
 
-    exact_shards = [output_dir1 / path.name for path in filtered_shards]
-    output_dir2 = output_root / "minhash_dedup"
-    minhash_stats = _minhash_document_deduplication(exact_shards, output_dir2)
     assert minhash_stats["input_documents"] == exact_stats["kept_documents"]
     stages.append(minhash_stats)
     final_documents = minhash_stats["kept_documents"]
@@ -339,7 +342,7 @@ def run(argv=None):
         "counting_notes": {
             "discard_attribution": "First rejecting stage in execution order; each document is counted once.",
             "pii": "Masking changes text without discarding documents; per-type document counts can overlap.",
-            "storage": "Each WET produces one JSONL shard per stage; each record contains a text field.",
+            "storage": "Only final JSONL shards and this report are kept; intermediate files are temporary.",
             "line_breaks": "JSON escapes preserve document line breaks; deduplication operates on decoded text.",
             "exact_deduplication": "Keep only lines occurring once in the filtered corpus; remove all repeated copies.",
             "empty_documents": "Emptied documents remain as JSON records with empty text; tokenization skips them.",

@@ -24,12 +24,13 @@ class ModelConfig:
 class TrainingConfig:
     seed: int = 0
     dtype: str = "bfloat16"
-    train_batch_size: int = 16
-    eval_batch_size: int = 16
+    # Single GPU starting point for the RTX 6000D (84 GB); benchmark peak memory.
+    train_batch_size: int = 32
+    eval_batch_size: int = 32
     train_steps: int = 16_384
-    gradient_accumulation_steps: int = 64
+    gradient_accumulation_steps: int = 32  # Effective batch: 32 * 32 = 1,024 sequences.
     compile: bool = True
-    eval_iterations: int = 8_000
+    eval_iterations: int = 4_000  # Keep 128,000 validation sequences per evaluation.
     eval_interval: int = 2_000
     max_grad_norm: float | None = 1.0
     device: str = "cuda"

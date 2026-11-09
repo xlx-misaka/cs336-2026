@@ -22,6 +22,13 @@ from cs336_data.mask_pii import mask_phone_numbers
         "555-1234",
         "(650) 253-0000 ext. 123",
         "01676 935000 x42",
+        "0494 151 331",
+        "(02) 1234 5678",
+        "+61 494 151 331",
+        "+40 364 101203",
+        "0040 364 101203",
+        "+81-3-4540-4348",
+        "(876) 927-1660-9",
     ],
 )
 def test_mask_phone_regression_formats(number):
@@ -39,6 +46,12 @@ def test_mask_phone_regression_formats(number):
         "partABC555-1234XYZ",
         "123456789012345",
         "already masked: |||PHONE_NUMBER|||",
+        "Tokyo,150-0001, Japan",
+        "Postal code: 150-0001",
+        "sites-host-mtl03-3002-v4.8.517-2026-04-16-e9d060dd",
+        "Version: 517-2026",
+        "555-1234",
+        "https://example.com/item/650-253-0000",
         "",
     ],
 )
@@ -57,3 +70,16 @@ def test_mask_phone_regression_preserves_newlines_and_indentation():
     text = "Heading\n    Tel: 01676 935000\n\nContact us."
     expected = "Heading\n    Tel: |||PHONE_NUMBER|||\n\nContact us."
     assert mask_phone_numbers(text) == (expected, 1)
+
+
+def test_mask_phone_regression_context_and_replacement_count():
+    text = "Tokyo,150-0001, Japan; Tel: 555-1234. Version: 517-2026."
+    expected = "Tokyo,150-0001, Japan; Tel: |||PHONE_NUMBER|||. Version: 517-2026."
+    assert mask_phone_numbers(text) == (expected, 1)
+
+
+def test_mask_phone_regression_international_without_cue():
+    assert mask_phone_numbers("Contact\n+40 364 101203\nTokyo,150-0001, Japan") == (
+        "Contact\n|||PHONE_NUMBER|||\nTokyo,150-0001, Japan",
+        1,
+    )

@@ -1,24 +1,30 @@
-"""并行过滤 WET，按原始文本行精确去重，再对整篇文档进行 MinHash 去重。
+"""并行过滤 WET，减少可读正文误删，并对整篇文档进行 MinHash 去重。
 
 在 assignment4-data 项目根目录运行：
     uv run scripts/filter_data.py
-    uv run scripts/filter_data.py --manifest path/to/manifest.json --output-dir /tmp/filtered-demo --workers 2
+    uv run scripts/filter_data.py --output-dir /tmp/filtered-demo --workers 2 --hash-workers 2 --min-words 50
 
 输入：furu manifest.json 中列出的英文 WET，以及现有质量、NSFW、Toxic 分类器。
-流程：WET conversion 正文 → Gopher → 质量分类器 → NSFW → Toxic → PII 遮蔽，
-      然后跨全部分片进行原始行精确去重、MinHash 文档去重。
+流程：WET 正文 → 界面模板清理 → Gopher/质量信号 → NSFW → Toxic → PII 遮蔽，
+      然后整篇精确去重、行级去重、正文复检和 MinHash 文档去重。
 输出：默认 local-shared-data/filtered_corpus/北京时间戳/，仅包含最终的
       wet_XXXX.jsonl 和 filter_stats.json，每个 WET 对应一个 JSONL 分片。
 每行是 {"text": "正文"}。过滤和精确去重的中间文件使用临时目录，退出时自动清理。
 正文内部换行、空行、制表符由 JSON 转义保存，读取后恢复；正文首尾仍由读取函数 strip。
-精确去重删除所有出现多次的原始行；MinHash 每个连通分组保留最早的一篇。
-去重造成的空正文保留为空记录，分词时跳过；各阶段贡献按首次拒绝的步骤统计。
-过滤用多个进程，两个全局去重阶段顺序运行；参数见下方常量和 --help。
+默认 --quality-policy recall：可读正文/代码为 Gopher 或质量模型拒绝提供复核证据，
+短文有完整句子时可保留；这不是置信度校准。strict 使用原 Gopher/质量拒绝条件和硬长度门限。
+默认 --line-dedup-mode conservative：保留代码及有用正文，文档内重复正文留一份；
+strict 删除所有重复原始行。课程独立去重和 Gopher adapter 保持原语义。
+空文始终删除；--min-words 默认 50，recall 模式保留有正文证据的完整短文。
+每个拒绝、模板修改和规则复核都记录统计；MinHash 每个连通分组保留最早的一篇。
+过滤和 MinHash 签名计算分别使用进程池；全局行统计、LSH、Jaccard 和聚簇由主进程处理。
 """
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
+import multiprocessing
 from collections import Counter
 from contextlib import ExitStack
 from datetime import datetime
@@ -35,6 +41,13 @@ from cs336_data.deduplication import _get_n_gram_set, _jaccard, _minhash, _norm_
 from cs336_data.harmful_content import classify_nsfw, classify_toxic_speech
 from cs336_data.mask_pii import mask_emails, mask_ips, mask_phone_numbers
 from cs336_data.quality import classify_quality, gopher_quality_filter
+from cs336_data.text_quality import (
+    clean_boilerplate,
+    is_code_line,
+    page_rejection_reason,
+    prose_word_count,
+    text_signals,
+)
 
 # Path to the manifest file.
 MANIFEST_PATH = Path(
@@ -44,13 +57,14 @@ MANIFEST_PATH = Path(
 
 # Parallelism parameters.
 NUM_CPUS = 2
-FILTER_STAGES = ("gopher", "quality", "nsfw", "toxic")
+FILTER_STAGES = ("boilerplate", "gopher", "quality", "nsfw", "toxic")
 PII_TYPES = ("emails", "phone_numbers", "ips")
 
 # filter parameters
 QUALITY_THRESHOLD = 0.8
 NSFW_THRESHOLD = 0.8
 TOXIC_THRESHOLD = 0.8
+MIN_FINAL_WORDS = 50
 
 # minhash parameters
 NUM_HASHES = 100
@@ -80,22 +94,48 @@ def load_texts_from_wet(wet_path):
             yield text.strip()
 
 
-def filter_text(text: str, counts: Counter[str] | None = None):
-    """Filter out unwanted characters and words."""
+def filter_text(text: str, counts: Counter[str] | None = None, quality_policy="recall"):
+    """Combine explicit page-state checks, quality signals and unchanged harmful-content gates."""
     if counts is None:
         counts = Counter()
     counts["input_documents"] += 1
 
+    original_text = text
+    text, removed = clean_boilerplate(text)
+    counts["boilerplate_modified_documents"] += int(removed > 0)
+    counts["boilerplate_removed_lines"] += removed
+    signals = text_signals(text)
+    reason = page_rejection_reason(text, signals, removed)
+    if reason:
+        counts["boilerplate_discarded"] += 1
+        counts[f"boilerplate_reason_{reason}"] += 1
+        return None
+    readable = signals.substantial_body or signals.readable_short
+    rescue = quality_policy == "recall" and readable
+
     # gopher quality filter
     if not gopher_quality_filter(text):
-        counts["gopher_discarded"] += 1
-        return None
+        # Cleaning interface text can move an otherwise valid document across a numeric rule boundary.
+        cleanup_pass = (
+            not rescue
+            and quality_policy == "recall"
+            and removed > 0
+            and signals.prose_words > 0
+            and gopher_quality_filter(original_text)
+        )
+        if not (rescue or cleanup_pass):
+            counts["gopher_discarded"] += 1
+            return None
+        counts["gopher_rescued"] += 1
+        counts["gopher_preclean_pass"] += int(cleanup_pass)
 
     # quality classifier
-    label, socre = classify_quality(text)
-    if label == "cc" and socre >= QUALITY_THRESHOLD:
-        counts["quality_discarded"] += 1
-        return None
+    label, score = classify_quality(text)
+    if label == "cc" and score >= QUALITY_THRESHOLD:
+        if not rescue:
+            counts["quality_discarded"] += 1
+            return None
+        counts["quality_rescued"] += 1
 
     # harmful content classifier
     label, score = classify_nsfw(text)
@@ -120,7 +160,7 @@ def filter_text(text: str, counts: Counter[str] | None = None):
     return text
 
 
-def process_single_wet(wet_index: int, wet_path, output_root: Path):
+def process_single_wet(wet_index: int, wet_path, output_root: Path, quality_policy="recall"):
     """Write one JSONL shard per WET, preserving document line breaks."""
     output_dir = output_root / "filtered"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +168,7 @@ def process_single_wet(wet_index: int, wet_path, output_root: Path):
     counts = Counter()
     with output_path.open("w", encoding="utf-8", newline="\n") as output_file:
         for text in load_texts_from_wet(wet_path):
-            text = filter_text(text, counts)
+            text = filter_text(text, counts, quality_policy)
             if text is not None:
                 output_file.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
     print(f"WET {wet_index}: kept {counts['kept_documents']}/{counts['input_documents']} documents.")
@@ -155,7 +195,22 @@ def _filter_stage_stats(counts):
     entered = counts["input_documents"]
     for name in FILTER_STAGES:
         kept = entered - counts[f"{name}_discarded"]
-        stages.append(_stage_stats(name, entered, kept))
+        stage = _stage_stats(name, entered, kept)
+        if name == "boilerplate":
+            stage.update(
+                modified_documents=counts["boilerplate_modified_documents"],
+                removed_lines=counts["boilerplate_removed_lines"],
+                by_reason={
+                    key.removeprefix("boilerplate_reason_"): value
+                    for key, value in counts.items()
+                    if key.startswith("boilerplate_reason_")
+                },
+            )
+        if name in {"gopher", "quality"}:
+            stage["rescued_at_stage"] = counts[f"{name}_rescued"]
+        if name == "gopher":
+            stage["preclean_passes"] = counts["gopher_preclean_pass"]
+        stages.append(stage)
         entered = kept
     assert entered == counts["kept_documents"]
     stages.append(
@@ -182,21 +237,52 @@ def _read_documents(path):
             yield json.loads(record)["text"]
 
 
-def _exact_line_deduplication(input_files, output_directory):
-    """Keep only corpus-unique original lines and preserve the remaining line breaks."""
+def _exact_document_deduplication(input_files, output_directory):
+    """Retain one exact document before counting shared lines, avoiding loss of every copy."""
+    output_directory.mkdir(parents=True, exist_ok=True)
+    seen = set()
+    entered = kept = 0
+    for path in input_files:
+        with (output_directory / path.name).open("w", encoding="utf-8", newline="\n") as destination:
+            for text in _read_documents(path):
+                entered += 1
+                digest = hashlib.sha256(text.encode("utf-8")).digest()
+                if digest not in seen:
+                    seen.add(digest)
+                    destination.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+                    kept += 1
+    return _stage_stats("exact_document_deduplication", entered, kept)
+
+
+def _exact_line_deduplication(input_files, output_directory, mode="strict"):
+    """Strict course line semantics or conservative body/code preservation for the pipeline."""
+    if mode not in {"strict", "conservative"}:
+        raise ValueError("Unknown line deduplication mode")
     output_directory.mkdir(parents=True, exist_ok=True)
     line_counts = Counter()
     for path in input_files:
         for text in _read_documents(path):
             # Match text-mode file iteration, including universal newline handling.
-            line_counts.update(hash(line) for line in StringIO(text, newline=None))
+            keys = [hash(line) for line in StringIO(text, newline=None)]
+            line_counts.update(set(keys) if mode == "conservative" else keys)
 
     documents = modified = removed_lines = removed_characters = empty = 0
     for path in input_files:
         with (output_directory / path.name).open("w", encoding="utf-8", newline="\n") as destination:
             for text in _read_documents(path):
                 lines = list(StringIO(text, newline=None))
-                unique_lines = [line for line in lines if line_counts[hash(line)] == 1]
+                unique_lines = []
+                seen = set()
+                for line in lines:
+                    key = hash(line)
+                    if mode == "strict":
+                        keep = line_counts[key] == 1
+                    else:
+                        protected = not line.strip() or is_code_line(line)
+                        keep = protected or (key not in seen and (line_counts[key] == 1 or prose_word_count(line) > 0))
+                    if keep:
+                        unique_lines.append(line)
+                    seen.add(key)
                 result = "".join(unique_lines)
                 documents += 1
                 modified += int(len(lines) != len(unique_lines))
@@ -212,13 +298,53 @@ def _exact_line_deduplication(input_files, output_directory):
         removed_lines=removed_lines,
         removed_characters=removed_characters,
         empty_output_documents=empty,
+        mode=mode,
     )
 
 
-def _minhash_document_deduplication(input_files, output_directory):
+def _filter_short_documents(input_files, output_directory, min_words, preserve_readable=False):
+    """Recheck page state and length after line removal; optionally retain complete short prose."""
+    output_directory.mkdir(parents=True, exist_ok=True)
+    entered = kept = empty = short = templates = rescued = 0
+    for path in input_files:
+        with (output_directory / path.name).open("w", encoding="utf-8", newline="\n") as destination:
+            for text in _read_documents(path):
+                entered += 1
+                signals = text_signals(text) if preserve_readable else None
+                reason = page_rejection_reason(text, signals) if signals is not None else None
+                if not text.strip():
+                    empty += 1
+                elif reason:
+                    templates += 1
+                elif len(text.split()) < min_words and not (signals and signals.readable_short):
+                    short += 1
+                else:
+                    destination.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+                    kept += 1
+                    rescued += int(len(text.split()) < min_words)
+    return _stage_stats(
+        "post_dedup_quality",
+        entered,
+        kept,
+        empty_discarded=empty,
+        short_discarded=short,
+        template_discarded=templates,
+        readable_short_kept=rescued,
+        min_words=min_words,
+    )
+
+
+def _document_signature(text):
+    ngrams = _get_n_gram_set(_norm_text(text), NGRAMS)
+    return _minhash(ngrams, NUM_HASHES) if ngrams is not None else None
+
+
+def _minhash_document_deduplication(input_files, output_directory, workers=1):
     """Compare decoded texts, keeping byte offsets into JSONL shards for bounded text storage."""
     if NUM_HASHES <= 0 or NUM_BANDS <= 0 or NUM_HASHES % NUM_BANDS:
         raise ValueError("NUM_HASHES must be positive and divisible by positive NUM_BANDS")
+    if workers < 1:
+        raise ValueError("Hash workers must be positive")
     output_directory.mkdir(parents=True, exist_ok=True)
     rows_per_band = NUM_HASHES // NUM_BANDS
     # Store only locations, not all documents or all n-gram sets.
@@ -246,11 +372,16 @@ def _minhash_document_deduplication(input_files, output_directory):
             text = json.loads(read_document(index))["text"]
             return _get_n_gram_set(_norm_text(text), NGRAMS)
 
-        for index in tqdm(range(len(documents)), desc="MinHash documents", unit="doc"):
-            ngrams = read_ngrams(index)
-            if ngrams is None:
+        # A separate file iterator feeds workers; it never shares seek handles with Jaccard reads.
+        texts = (text for path in input_files for text in _read_documents(path))
+        if workers == 1:
+            signatures = map(_document_signature, texts)
+        else:
+            pool = stack.enter_context(multiprocessing.Pool(workers))
+            signatures = pool.imap(_document_signature, texts, chunksize=16)
+        for index, signature in enumerate(tqdm(signatures, total=len(documents), desc="MinHash documents", unit="doc")):
+            if signature is None:
                 continue
-            signature = _minhash(ngrams, NUM_HASHES)
             candidates = set()
             for band_index, band in enumerate(buckets):
                 start = band_index * rows_per_band
@@ -258,10 +389,14 @@ def _minhash_document_deduplication(input_files, output_directory):
                 candidates.update(bucket)
                 bucket.append(index)
             # A pair is checked at most once, even if it matched multiple bands.
+            ngrams = None
             for candidate in sorted(candidates):
                 left, right = groups.find(candidate), groups.find(index)
                 if left == right:
                     continue
+                if ngrams is None:
+                    ngrams = read_ngrams(index)
+                    assert ngrams is not None, "A signed document must have n-grams"
                 other_ngrams = read_ngrams(candidate)
                 if other_ngrams is not None and _jaccard(ngrams, other_ngrams) >= JACCARD_THRESHOLD:
                     groups.merge(min(left, right), max(left, right))
@@ -279,9 +414,27 @@ def run(argv=None):
     parser.add_argument("--manifest", type=Path, default=MANIFEST_PATH, help="Input furu WET manifest.")
     parser.add_argument("--output-dir", type=Path, help="New output directory; defaults to a timestamped directory.")
     parser.add_argument("--workers", type=int, default=NUM_CPUS, help="Number of WET filtering processes.")
+    parser.add_argument("--hash-workers", type=int, default=NUM_CPUS, help="Number of MinHash signature processes.")
+    parser.add_argument(
+        "--quality-policy",
+        choices=("recall", "strict"),
+        default="recall",
+        help="Recall policy reviews rule/model rejections using body evidence.",
+    )
+    parser.add_argument(
+        "--line-dedup-mode",
+        choices=("conservative", "strict"),
+        default="conservative",
+        help="Conservative mode preserves prose/code; strict removes all repeated lines.",
+    )
+    parser.add_argument(
+        "--min-words", type=int, default=MIN_FINAL_WORDS, help="Minimum whitespace words after deduplication."
+    )
     args = parser.parse_args(argv)
-    if args.workers < 1:
-        parser.error("--workers must be positive")
+    if args.workers < 1 or args.hash_workers < 1:
+        parser.error("--workers and --hash-workers must be positive")
+    if args.min_words < 0:
+        parser.error("--min-words cannot be negative")
     wet_pathes = get_wet_pathes(args.manifest)
     # Generate one experiment directory in the parent and pass it to every worker.
     output_root = args.output_dir or (
@@ -295,7 +448,7 @@ def run(argv=None):
         work_root = Path(temporary)
         with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
             futures = [
-                executor.submit(process_single_wet, wet_index, wet_path, work_root)
+                executor.submit(process_single_wet, wet_index, wet_path, work_root, args.quality_policy)
                 for wet_index, wet_path in enumerate(wet_pathes)
             ]
             for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
@@ -306,20 +459,31 @@ def run(argv=None):
 
         # Shut down workers before building the global line counter.
         filtered_shards.sort()
+        document_directory = work_root / "document_dedup"
+        document_stats = _exact_document_deduplication(filtered_shards, document_directory)
+        document_shards = [document_directory / path.name for path in filtered_shards]
         exact_directory = work_root / "exact_dedup"
-        exact_stats = _exact_line_deduplication(filtered_shards, exact_directory)
+        exact_stats = _exact_line_deduplication(document_shards, exact_directory, args.line_dedup_mode)
         exact_shards = [exact_directory / path.name for path in filtered_shards]
-        minhash_stats = _minhash_document_deduplication(exact_shards, output_root)
+        clean_directory = work_root / "length_checked"
+        length_stats = _filter_short_documents(
+            exact_shards, clean_directory, args.min_words, preserve_readable=args.quality_policy == "recall"
+        )
+        clean_shards = [clean_directory / path.name for path in filtered_shards]
+        minhash_stats = _minhash_document_deduplication(clean_shards, output_root, args.hash_workers)
 
     stages = _filter_stage_stats(counts)
-    assert exact_stats["input_documents"] == counts["kept_documents"]
+    assert document_stats["input_documents"] == counts["kept_documents"]
+    stages.append(document_stats)
+    assert exact_stats["input_documents"] == document_stats["kept_documents"]
     stages.append(exact_stats)
 
-    assert minhash_stats["input_documents"] == exact_stats["kept_documents"]
+    assert length_stats["input_documents"] == exact_stats["kept_documents"]
+    stages.append(length_stats)
+    assert minhash_stats["input_documents"] == length_stats["kept_documents"]
     stages.append(minhash_stats)
     final_documents = minhash_stats["kept_documents"]
-    # Empty records have no n-grams and are retained by MinHash; tokenization skips them.
-    final_empty = exact_stats["empty_output_documents"]
+    final_empty = 0
     total_discarded = counts["input_documents"] - final_documents
     assert sum(stage["discarded_documents"] for stage in stages) == total_discarded
     for stage in stages:
@@ -344,12 +508,17 @@ def run(argv=None):
             "pii": "Masking changes text without discarding documents; per-type document counts can overlap.",
             "storage": "Only final JSONL shards and this report are kept; intermediate files are temporary.",
             "line_breaks": "JSON escapes preserve document line breaks; deduplication operates on decoded text.",
-            "exact_deduplication": "Keep only lines occurring once in the filtered corpus; remove all repeated copies.",
-            "empty_documents": "Emptied documents remain as JSON records with empty text; tokenization skips them.",
+            "exact_deduplication": "Exact documents are kept once; line behavior follows line_dedup_mode.",
+            "post_dedup_quality": "Page-state checks run again; recall policy can retain complete short prose.",
+            "rescues": "Counts indicate passes at each stage, not gold-label accuracy or final retained counts.",
             "zero_discards": "Contribution percentages are null when no documents were discarded.",
         },
         "parameters": {
             "workers": args.workers,
+            "hash_workers": args.hash_workers,
+            "min_final_words": args.min_words,
+            "quality_policy": args.quality_policy,
+            "line_dedup_mode": args.line_dedup_mode,
             "quality_threshold": QUALITY_THRESHOLD,
             "nsfw_threshold": NSFW_THRESHOLD,
             "toxic_threshold": TOXIC_THRESHOLD,
@@ -373,6 +542,11 @@ def run(argv=None):
         )
     print(f"PII: modified {counts['pii_modified_documents']} documents.")
     print(f"Exact-line deduplication: removed {exact_stats['removed_lines']} lines.")
+    print(
+        f"Post-deduplication: discarded {length_stats['empty_discarded']} empty "
+        f"and {length_stats['short_discarded']} short documents; "
+        f"kept {length_stats['readable_short_kept']} readable short documents."
+    )
     print(
         f"Final output: {final_documents} document records ({final_empty} empty) "
         f"in {len(filtered_shards)} JSONL shards."

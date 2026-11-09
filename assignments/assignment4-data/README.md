@@ -255,38 +255,43 @@ uv run scripts/tokenize_texts.py \
 
 生效配置为 [cs336_basics/train_config.py](cs336_basics/train_config.py)。当前 [scripts/train.py](scripts/train.py) 的入口构造 dataclass `Config`，通过 `--train-bin`、`--valid-bin` 指定数据；它不会自动读取 `configs/config.yaml` 或 `configs/experiment/your_data.yaml`。
 
-模型参数保持课程的约 **430M**：词表 50,257，层数 24，`d_model=1024`，`d_ff=3072`，注意力头数 16，上下文 512，`rope_theta=10000`。按当前模型实现统计总参数为 **430,132,224**。
+**当前默认值已改为个人小模型实验，不是课程正式比较配置。** 手册要求正式数据比较固定模型结构和训练流程。个人实验依据现有 711,501,653 tokens 设置约 36M 参数基线；不能用该模型的 perplexity 直接替代课程约 430M 模型的正式结果。
 
-当前 batch 设置面向单张 RTX 6000D（84GB）进行更大小批次的试运行：将小批次从 32 增至 64、累积从 32 次降至 16 次，目标是在保持预算的同时提高显存使用量并减少前向与反向调用次数；尚未在目标卡上实测提速或峰值显存，不能视为已测得的最大可用 batch。下面同时列出课程原始八卡设置，便于核对预算：
+当前模型总参数为 **35,961,600**，词表仍为 50,257，上下文仍为 512，`rope_theta=10000`。可直接复用已有 GPT-2 `uint16` 训练文件及独立验证文件，无需重新分词。模型大小是试验起点，尚未证明优于更大的模型。
 
-| 项目 | 当前单卡实验 | 课程原始八卡设置 |
+| 项目 | 当前个人单卡实验 | 课程原始八卡设置 |
 | --- | ---: | ---: |
-| GPU 数量 | 1 | 8 张 B200 |
-| `train_batch_size`（每卡小批次） | 64 | 128 |
-| `gradient_accumulation_steps` | 16 | 1 |
-| 全局有效 batch（序列） | 1,024 | 1,024 |
-| `eval_batch_size` | 64 | 128 |
-| `eval_iterations` | 2,000 | 1,000 |
-| `train_steps`（参数更新次数） | 16,384 | 16,384 |
-| 每次更新处理的 token | 524,288 | 524,288 |
-| 累计训练 token | 8,589,934,592 | 8,589,934,592 |
+| 总参数量 | 35,961,600 | 430,132,224 |
+| 层数 | 12 | 24 |
+| `d_model` | 256 | 1,024 |
+| `d_ff` | 768 | 3,072 |
+| 注意力头数 | 4 | 16 |
+| GPU 数量 | 1 张 RTX 6000D（84GB） | 8 张 B200 |
+| `train_batch_size`（每卡小批次） | 192 | 128 |
+| `gradient_accumulation_steps` | 4 | 1 |
+| 全局有效 batch（序列） | 768 | 1,024 |
+| `train_steps`（参数更新次数） | 2,048 | 16,384 |
+| 每次更新处理的 token | 393,216 | 524,288 |
+| 累计训练 token | 805,306,368 | 8,589,934,592 |
+| `eval_batch_size` | 192 | 128 |
+| `eval_iterations` | 128 | 1,000 |
+| 每次验证采样 token | 12,582,912 | 65,536,000 |
+| `eval_interval` | 256 | 2,000 |
 
-共同参数：`seed=0`、`dtype=bfloat16`、`compile=True`、`device=cuda`、学习率 `6e-4`、warmup 比例 0.03、weight decay 0.1、Adam betas `(0.9, 0.98)`、epsilon `1e-9`、梯度裁剪范数 1.0、每 2,000 步评估一次、每 20 步记录训练信息。
+共同参数：`seed=0`、`dtype=bfloat16`、`compile=True`、`device=cuda`、学习率 `6e-4`、warmup 比例 0.03、weight decay 0.1、Adam betas `(0.9, 0.98)`、epsilon `1e-9`、梯度裁剪范数 1.0、每 20 步记录训练信息。个人实验也调整了训练预算和验证采样量，不与课程原始预算等价。
 
-预算的计算方式为：
+现有语料平均每参数约 19.8 个 token，作为参考量级；这不是“20 tokens/parameter 必然最优”的保证。[Chinchilla](https://arxiv.org/abs/2203.15556) 研究的是给定计算预算下的模型和训练量配比，[数据受限研究](https://arxiv.org/abs/2305.16264) 还考虑了重复采样的收益。因此没有把语料 token 数直接当成决定最优参数量的唯一条件。
 
 ```text
 GPU 数 × train_batch_size × gradient_accumulation_steps × context_length × train_steps
-当前单卡：1 × 64 × 16 × 512 × 16,384 = 8,589,934,592 tokens
+当前个人单卡：1 × 192 × 4 × 512 × 2,048 = 805,306,368 tokens
 ```
 
-当前语料为 711,501,653 tokens，完整训练相当于约 **12.07 遍语料量**的重复采样。[get_batch](cs336_basics/data.py) 随机选择起点，再读取连续 512 个 token；标签窗口向后移动一位。采样可以重复或重叠，也可能跨越文档 EOS，不保证按顺序完整遍历数据。
+当前训练量相当于约 **1.13 倍现有语料量**。这表示累计处理的 token 数，不表示逐篇按顺序训练 1.13 遍。[get_batch](cs336_basics/data.py) 随机选择起点，再读取连续 512 个 token；标签窗口向后移动一位。采样可以重复或重叠，也可能跨越文档 EOS，不能保证覆盖每个原始 token。
 
-每个小批次处理 32,768 tokens；累积 16 个小批次的梯度后才更新一次参数。累积次数是有效 batch 的组成部分，不是把同一批样本训练 16 遍。
+每个小批次处理 98,304 tokens；累积 4 个小批次的梯度后才更新一次参数。第一次定期验证在更新索引 256 处，之后每隔 256 步验证，并在训练结束后再次验证。
 
-两组验证配置都评估 `128,000 × 512 = 65,536,000` 个采样 token。保持有效 batch、训练 token 和验证采样量相同，不保证数值轨迹完全一致，也不自动意味着单卡适配满足课程正式提交要求；正式比较应遵循手册固定模型和训练流程的规定。
-
-**当前单卡配置不能直接套用原始八卡 Modal 命令。** Modal 入口会启动 8 个进程，但读取当前的 `64 × 16` 设置，总训练量将变为 **68,719,476,736 tokens**，是原始课程预算的 8 倍。按课程八卡方案运行前，应核对并恢复该列的每卡 batch、累积次数及验证配置。
+**当前配置不能直接套用八卡 Modal 命令进行课程正式比较。** 多卡会乘大总训练量，正式比较需同时恢复上表课程模型、每卡 batch、累积次数、训练步数及验证设置。
 
 ### 单卡训练入口与产物
 
@@ -298,7 +303,7 @@ uv run scripts/train.py \
   --valid-bin local-shared-data/tokenized_paloma_c4_100_domains_validation.bin
 ```
 
-训练数据通过 `np.memmap` 按批读取，不把整个 token 文件一次性放入显存。RTX 6000D（84GB）上的峰值显存和实际训练时长尚未实测，先做训练与验证的短程压测，再投入完整预算。若训练小批次 64 显存不足，可退回 `train_batch_size=32`、`gradient_accumulation_steps=32`；验证显存不足则单独退回 `eval_batch_size=32`、`eval_iterations=4000`。两组回退各自保持训练或验证采样预算。训练与验证都应压测；优先比较稳定吞吐和峰值显存，保留临时分配余量，不以占满 84GB 为目标。
+训练数据通过 `np.memmap` 按批读取，不把整个 token 文件一次性放入显存。RTX 6000D（84GB）上的峰值显存和实际训练时长尚未实测，先做训练与验证的短程压测，再投入完整预算。小模型使用较大的 batch 192 作为试跑值；当前 50,257 词表的 logits 及交叉熵 FP32 临时张量会占据大量显存，减小模型不等于可以无限增大 batch。此配置不是已实测的最大吞吐或最大显存配置。若训练显存不足，可退回 `train_batch_size=128`、`gradient_accumulation_steps=6`，更低一档为 `96 × 8`，均保持有效 batch 768；验证显存不足可单独退回 `eval_batch_size=128`、`eval_iterations=192`，保持每次验证采样量。稳定后比较吞吐和峰值显存，并保留临时分配余量。
 
 训练输出路径目前由 `scripts/train.py` 中的 `DEFAULT_MODAL_MODEL_OUTPUT` 固定为 `/root/data/output/your_data`；运行用户需要对此目录有写权限。当前 CLI 不提供训练输出目录或 batch 的覆盖参数，不能只修改 `your_data.yaml` 来改变这些行为。
 

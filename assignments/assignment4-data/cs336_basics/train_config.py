@@ -1,3 +1,10 @@
+"""Personal 36M model experiment for the current 711.5M-token corpus.
+
+This replaces the course model/budget for a personal single-GPU experiment.
+Batch 192 is an unmeasured RTX 6000D (84 GB) trial, not a verified memory maximum.
+See README.md for the original course settings and lower-memory fallbacks.
+"""
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,10 +20,10 @@ class PathsConfig:
 class ModelConfig:
     vocab_size: int = 50257
     context_length: int = 512
-    d_model: int = 1024
-    d_ff: int = 3072
-    num_layers: int = 24
-    num_heads: int = 16
+    d_model: int = 256
+    d_ff: int = 768
+    num_layers: int = 12
+    num_heads: int = 4
     rope_theta: float = 10000.0
 
 
@@ -24,14 +31,14 @@ class ModelConfig:
 class TrainingConfig:
     seed: int = 0
     dtype: str = "bfloat16"
-    # Higher-memory single-GPU trial for RTX 6000D (84 GB); benchmark before a full run.
-    train_batch_size: int = 64
-    eval_batch_size: int = 64
-    train_steps: int = 16_384
-    gradient_accumulation_steps: int = 16  # Effective batch: 64 * 16 = 1,024 sequences.
+    # Large-vocabulary loss dominates memory; test training and validation on the target GPU.
+    train_batch_size: int = 192
+    eval_batch_size: int = 192
+    train_steps: int = 2_048
+    gradient_accumulation_steps: int = 4  # Effective batch: 192 * 4 = 768 sequences.
     compile: bool = True
-    eval_iterations: int = 2_000  # Keep 128,000 validation sequences per evaluation.
-    eval_interval: int = 2_000
+    eval_iterations: int = 128  # 12,582,912 sampled tokens per evaluation.
+    eval_interval: int = 256
     max_grad_norm: float | None = 1.0
     device: str = "cuda"
     lr: float = 6e-4

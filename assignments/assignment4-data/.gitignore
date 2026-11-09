@@ -166,3 +166,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 local-shared-data/
+
+# Keep generated model weights local; track model_config.json normally.
+/output/*.pt

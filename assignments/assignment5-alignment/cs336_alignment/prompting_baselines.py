@@ -10,7 +10,7 @@ from cs336_alignment.vllm_utils import VLLMServer
 PROMPT_PATH = Path(__file__).parent / "prompts"
 MODEL_PATH = Path(__file__).parent.parent / "models"
 DATA_PATH = Path(__file__).parent.parent / "data"
-OUTPUT_PATH = Path(__file__).parent.parent / "output"
+OUTPUT_PATH = Path(__file__).parent.parent / "outputs"
 
 QUESTION_ONLY_PROMPT = Path(PROMPT_PATH / "question_only.prompt").read_text(
     encoding="utf-8"

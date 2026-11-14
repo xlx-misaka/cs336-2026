@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Literal
 
 import torch
 
@@ -35,3 +36,29 @@ def compute_rollout_rewards(
             / len(results),
         },
     )
+
+
+def compute_group_normalized_rewards(
+    raw_rewards: torch.Tensor,
+    group_size: int,
+    baseline: Literal["mean", "none"] = "mean",
+    advantage_eps: float = 1e-6,
+    advantage_normalizer: Literal["std", "none", "mean"] = "std",
+) -> tuple[torch.Tensor, dict[str, float]]:
+    if group_size <= 1:
+        raise ValueError("group_size must be greater than 1")
+
+    rewards = raw_rewards.view(-1, group_size).contiguous()
+    rewards_mean = rewards.mean(dim=-1, keepdim=True)
+    rewards_std = rewards.std(dim=-1, keepdim=True)
+
+    if baseline == "mean":
+        rewards = rewards - rewards_mean
+    if advantage_normalizer == "std":
+        rewards = rewards / (rewards_std + advantage_eps)
+    elif advantage_normalizer == "mean":
+        rewards = rewards / (rewards_mean + advantage_eps)
+
+    advantages = rewards.view(-1).contiguous()
+
+    return (advantages, {})

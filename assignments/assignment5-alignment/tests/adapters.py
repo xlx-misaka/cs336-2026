@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 import torch
 from torch import Tensor
@@ -10,7 +11,10 @@ from transformers import PreTrainedTokenizerBase
 
 from cs336_alignment.data_utils import tokenize_prompt_and_output
 from cs336_alignment.model_utils import get_response_log_probs
-from cs336_alignment.reward_utils import compute_rollout_rewards
+from cs336_alignment.reward_utils import (
+    compute_group_normalized_rewards,
+    compute_rollout_rewards,
+)
 
 
 def run_tokenize_prompt_and_output(
@@ -165,7 +169,13 @@ def run_compute_group_normalized_rewards(
                 your choice of other statistics to log (e.g. mean, std, max/min
                 of rewards).
     """
-    raise NotImplementedError
+    return compute_group_normalized_rewards(
+        raw_rewards,
+        group_size,
+        baseline,
+        advantage_eps,
+        advantage_normalizer,
+    )
 
 
 def run_compute_policy_gradient_loss(

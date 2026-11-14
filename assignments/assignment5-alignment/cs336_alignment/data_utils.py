@@ -7,7 +7,7 @@ def tokenize_prompt_and_output(
     output_strs: list[str],
     tokenizer: PreTrainedTokenizerBase,
 ) -> dict[str, torch.Tensor]:
-
+    """Tokenizes the prompts and outputs and returns a dictionary of tensors."""
     if not prompt_strs:
         raise ValueError("prompt_strs cannot be empty.")
 

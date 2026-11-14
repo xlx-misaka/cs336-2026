@@ -9,6 +9,14 @@ def compute_rollout_rewards(
     repeated_ground_truths: list[str],
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Compute rollout rewards for a list of responses and ground truths."""
+    if not rollout_responses:
+        raise ValueError("rollout_responses must not be empty")
+
+    if len(rollout_responses) != len(repeated_ground_truths):
+        raise ValueError(
+            "rollout_responses and repeated_ground_truths must have the same length"
+        )
+
     rollout_batch_size = len(rollout_responses)
     raw_rewards = torch.empty((rollout_batch_size,))
     results = []
@@ -22,8 +30,8 @@ def compute_rollout_rewards(
     return (
         raw_rewards,
         {
-            "mean total rewards": sum(r["reward"] for r in results) / len(results),
-            "mean format rewards": sum(r["format_reward"] for r in results)
+            "mean_total_rewards": sum(r["reward"] for r in results) / len(results),
+            "mean_format_rewards": sum(r["format_reward"] for r in results)
             / len(results),
         },
     )

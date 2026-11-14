@@ -9,6 +9,7 @@ from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
 
 from cs336_alignment.data_utils import tokenize_prompt_and_output
+from cs336_alignment.model_utils import get_response_log_probs
 
 
 def run_tokenize_prompt_and_output(
@@ -83,7 +84,12 @@ def run_get_response_log_probs(
                 entropy for each position (present only if
                 return_token_entropy=True).
     """
-    raise NotImplementedError
+    return get_response_log_probs(
+        model=model,
+        input_ids=input_ids,
+        labels=labels,
+        return_token_entropy=return_token_entropy,
+    )
 
 
 def run_compute_rollout_rewards(

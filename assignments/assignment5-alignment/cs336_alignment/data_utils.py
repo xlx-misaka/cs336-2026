@@ -7,6 +7,13 @@ def tokenize_prompt_and_output(
     output_strs: list[str],
     tokenizer: PreTrainedTokenizerBase,
 ) -> dict[str, torch.Tensor]:
+
+    if not prompt_strs:
+        raise ValueError("prompt_strs cannot be empty.")
+
+    if len(prompt_strs) != len(output_strs):
+        raise ValueError("prompt_strs and output_strs must have the same length.")
+
     prompts_ids = [
         torch.Tensor(tokenizer.encode(prompt, add_special_tokens=False))
         for prompt in prompt_strs
@@ -21,6 +28,9 @@ def tokenize_prompt_and_output(
         len(prompt_ids) + len(output_ids)
         for prompt_ids, output_ids in zip(prompts_ids, outputs_ids)
     )
+
+    if max_prompt_and_output_len == 0:
+        raise ValueError("prompt_strs and output_strs must contain non-empty strings.")
 
     input_ids = torch.empty(batch_size, max_prompt_and_output_len - 1)
     labels = torch.empty(batch_size, max_prompt_and_output_len - 1)
@@ -53,11 +63,11 @@ def tokenize_prompt_and_output(
         )[1:]
         response_mask[i, :] = torch.cat(
             [
-                torch.full((len(prompt_ids) - 1,), False),
+                torch.full((len(prompt_ids),), False),
                 torch.full((len(output_ids),), True),
                 torch.full((max_prompt_and_output_len - prompt_output_len,), False),
             ]
-        )
+        )[1:]
 
     return {
         "input_ids": input_ids.to(torch.int64),

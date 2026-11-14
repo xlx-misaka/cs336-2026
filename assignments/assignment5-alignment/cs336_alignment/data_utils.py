@@ -1,11 +1,11 @@
 import torch
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizerBase
 
 
 def tokenize_prompt_and_output(
     prompt_strs: list[str],
     output_strs: list[str],
-    tokenizer: PreTrainedTokenizer,
+    tokenizer: PreTrainedTokenizerBase,
 ) -> dict[str, torch.Tensor]:
     prompts_ids = [
         torch.Tensor(

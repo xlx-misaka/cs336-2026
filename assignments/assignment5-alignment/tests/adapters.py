@@ -10,7 +10,10 @@ from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
 
 from cs336_alignment.data_utils import tokenize_prompt_and_output
-from cs336_alignment.loss_utils import compute_policy_gradient_loss
+from cs336_alignment.loss_utils import (
+    aggregate_loss_across_microbatch,
+    compute_policy_gradient_loss,
+)
 from cs336_alignment.model_utils import get_response_log_probs
 from cs336_alignment.reward_utils import (
     compute_group_normalized_rewards,
@@ -262,7 +265,12 @@ def run_aggregate_loss_across_microbatch(
             A scalar containing the average loss. Make sure you can later call
             backward on this loss.
     """
-    raise NotImplementedError
+    return aggregate_loss_across_microbatch(
+        per_token_policy_gradient_loss,
+        mask,
+        loss_normalization,
+        normalization_constant,
+    )
 
 
 def run_grpo_train_step(

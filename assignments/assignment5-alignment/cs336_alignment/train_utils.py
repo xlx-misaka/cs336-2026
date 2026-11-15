@@ -36,53 +36,93 @@ def grpo_train_step(
     loss_normalization: Literal["sequence", "constant"] = "sequence",
     normalization_constant: int | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
+    if gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps must be greater than 0.")
+
+    device = next(model.parameters()).device
     tokenized = tokenize_prompt_and_output(
         repeated_prompts, rollout_responses, tokenizer
     )
-    input_ids = tokenized["input_ids"]
-    labels = tokenized["labels"]
-    response_mask = tokenized["response_mask"]
+    input_ids = tokenized["input_ids"].to(device=device)
+    labels = tokenized["labels"].to(device=device)
+    response_mask = tokenized["response_mask"].to(device=device)
 
-    rewards, _ = compute_rollout_rewards(
-        reward_fn, rollout_responses, repeated_ground_truths
+    rewards, raw_rewards_metadata = compute_rollout_rewards(
+        reward_fn,
+        rollout_responses,
+        repeated_ground_truths,
     )
+    rewards = rewards.to(device=device)
+
     group_normalized_rewards, _ = compute_group_normalized_rewards(
-        rewards, group_size, baseline, advantage_eps, advantage_normalizer
+        rewards,
+        group_size,
+        baseline,
+        advantage_eps,
+        advantage_normalizer,
     )
 
-    total_policy_loss = torch.zeros((1,), device=input_ids.device)
-    microbatch_size = len(input_ids) // gradient_accumulation_steps
+    microbatch_size = (len(input_ids) - 1) // gradient_accumulation_steps + 1
+    loss = torch.zeros((), device=device)
+    token_entropy = torch.zeros((), device=device)
+
     for i in range(0, len(input_ids), microbatch_size):
-        inputs_microbatch = input_ids[i : i + microbatch_size]
-        labels_microbatch = labels[i : i + microbatch_size]
-        log_probs = get_response_log_probs(model, inputs_microbatch, labels_microbatch)[
-            "log_probs"
-        ]
+        inputs_microbatch = input_ids[i : min(len(input_ids), i + microbatch_size)]
+        labels_microbatch = labels[i : min(len(input_ids), i + microbatch_size)]
+        log_probs, token_entropy_microbatch = get_response_log_probs(
+            model,
+            inputs_microbatch,
+            labels_microbatch,
+            return_token_entropy=True,
+        ).values()
         per_token_policy_gradient_loss, _ = compute_policy_gradient_loss(
-            group_normalized_rewards[i : i + microbatch_size],
+            group_normalized_rewards[i : min(len(input_ids), i + microbatch_size)],
             log_probs,
             importance_reweighting_method,
             old_log_probs,
             cliprange,
-            response_mask[i : i + microbatch_size],
+            response_mask[i : min(len(input_ids), i + microbatch_size)],
         )
-        policy_loss = (
+        loss_microbatch = (
             aggregate_loss_across_microbatch(
                 per_token_policy_gradient_loss,
-                response_mask[i : i + microbatch_size],
+                response_mask[i : min(len(input_ids), i + microbatch_size)],
                 loss_normalization,
                 normalization_constant,
             )
             * (len(inputs_microbatch))
             / len(input_ids)
         )
-        policy_loss.backward()
-        total_policy_loss += policy_loss
+
+        loss_microbatch.backward()
+        loss += loss_microbatch.detach()
+
+        token_entropy_microbatch = token_entropy_microbatch.detach().where(
+            response_mask[i : min(len(input_ids), i + microbatch_size)],
+            0.0,
+        )
+        token_entropy_microbatch = token_entropy_microbatch.sum(-1) / response_mask[
+            i : min(len(input_ids), i + microbatch_size)
+        ].sum(-1)
+        token_entropy += token_entropy_microbatch.sum(-1) / len(input_ids)
 
     if max_grad_norm is not None:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        gradient_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            max_grad_norm,
+        )
+    else:
+        grads = [param.grad for param in model.parameters() if param.grad is not None]
+        gradient_norm = torch.nn.utils.get_total_norm(grads)
 
     optimizer.step()
     optimizer.zero_grad()
 
-    return (total_policy_loss, {})
+    return (
+        loss,
+        {
+            **raw_rewards_metadata,
+            "token_entropy": token_entropy,
+            "gradient_norm": gradient_norm,
+        },
+    )

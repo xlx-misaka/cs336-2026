@@ -25,6 +25,9 @@ def aggregate_loss_across_microbatch(
     normalization_constant: int | None = None,
 ) -> torch.Tensor:
     if loss_normalization == "sequence":
+        if not mask.any(dim=-1).all(dim=-1):
+            raise ValueError("Mask must have at least one token per sequence.")
+
         per_sequence_policy_gradient_loss = per_token_policy_gradient_loss.where(
             mask == True,
             torch.tensor(
@@ -38,7 +41,7 @@ def aggregate_loss_across_microbatch(
 
     total_policy_gradient_loss = (
         per_sequence_policy_gradient_loss.sum(dim=-1)
-        / per_sequence_policy_gradient_loss.shape[0]
+        / per_sequence_policy_gradient_loss.shape[-1]
     )
 
     return total_policy_gradient_loss

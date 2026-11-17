@@ -269,6 +269,7 @@ def grpo_experiments_standard_on_policy(
 
         if step % training_hyperparameters["eval_interval"] == 0:
             mean_reward = 0
+            mean_format_reward = 0
             accuracy = 0
             pass_k = [0] * training_hyperparameters["group_size"]
 
@@ -295,7 +296,12 @@ def grpo_experiments_standard_on_policy(
                             accuracy += 1
                         pass_k[j] += flag
                         mean_reward += reward_metadata["reward"]
+                        mean_format_reward += reward_metadata["format_reward"]
             mean_reward /= (
+                training_hyperparameters["n_val_examples"]
+                * training_hyperparameters["group_size"]
+            )
+            mean_format_reward /= (
                 training_hyperparameters["n_val_examples"]
                 * training_hyperparameters["group_size"]
             )
@@ -312,6 +318,7 @@ def grpo_experiments_standard_on_policy(
             log_data.update(
                 {
                     "eval/mean_reward": mean_reward,
+                    "eval/mean_format_reward": mean_format_reward,
                     "eval/accuracy": accuracy,
                 }
                 | pass_k

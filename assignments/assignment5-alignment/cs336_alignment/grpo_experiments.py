@@ -376,7 +376,10 @@ def grpo_experiments(
     run.finish()
 
 
-def run_grpo_standard_on_policy_experiments(seed: int = 0):
+def run_grpo_standard_on_policy_experiments(
+    seed: int = 0,
+    overrides: dict[str, Any] | None = None,
+):
     model_id = "models/OLMo-2-0425-1B"
 
     with open("cs336_alignment/prompts/r1_zero.prompt") as f:
@@ -407,6 +410,7 @@ def run_grpo_standard_on_policy_experiments(seed: int = 0):
         "n_val_examples": 1024,
         "eval_interval": 10,
         "log_rollouts_interval": 40,
+        **(overrides or {}),
     }
     grpo_experiments(
         model_id,
@@ -419,6 +423,28 @@ def run_grpo_standard_on_policy_experiments(seed: int = 0):
         vllm_gpu=1,
     )
 
+
+
+def run_smoke(seed: int = 0) -> None:
+    """Run a 2-step smoke test with tiny train/val sets.
+
+    Checks that the model, vLLM server, weight sync, train step and eval
+    all work, without triggering a long training run.
+    """
+    print(
+        "=== smoke: 2 steps, 64 train prompts, 32 val prompts, eval/log every step ===",
+        flush=True,
+    )
+    run_grpo_standard_on_policy_experiments(
+        seed,
+        overrides={
+            "num_rollout_steps": 2,
+            "n_train_examples": 64,
+            "n_val_examples": 32,
+            "eval_interval": 1,
+            "log_rollouts_interval": 1,
+        },
+    )
 
 
 if __name__ == "__main__":

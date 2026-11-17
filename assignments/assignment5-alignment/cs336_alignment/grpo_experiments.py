@@ -422,4 +422,5 @@ def run_grpo_experiments(seed: int = 0):
 
 if __name__ == "__main__":
     for seed in range(4):
+        print(f"=====================seed: {seed}================================")
         run_grpo_experiments(seed)

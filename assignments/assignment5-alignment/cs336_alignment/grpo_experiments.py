@@ -1,6 +1,7 @@
 import json
 import random
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -220,7 +221,7 @@ def grpo_experiments_standard_on_policy(
     )
     run = wandb.init(
         project="cs336-grpo",
-        name="standard-on-policy",
+        name=f"standard-on-policy-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
         config={
             "model_id": model_id,
             "sampling": sampling_hyperparameters,

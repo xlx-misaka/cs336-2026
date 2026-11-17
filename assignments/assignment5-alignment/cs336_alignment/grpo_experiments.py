@@ -84,7 +84,7 @@ def _get_rollout_params(
     return repeated_prompts, rollout_responses, repeated_ground_truths
 
 
-def grpo_experiments_standard_on_policy(
+def grpo_experiments(
     model_id: str,
     prompt: str,
     reward_fn: Callable[[str, str], dict[str, float]],
@@ -376,7 +376,7 @@ def grpo_experiments_standard_on_policy(
     run.finish()
 
 
-def run_grpo_experiments(seed: int = 0):
+def run_grpo_standard_on_policy_experiments(seed: int = 0):
     model_id = "models/OLMo-2-0425-1B"
 
     with open("cs336_alignment/prompts/r1_zero.prompt") as f:
@@ -408,7 +408,7 @@ def run_grpo_experiments(seed: int = 0):
         "eval_interval": 10,
         "log_rollouts_interval": 40,
     }
-    grpo_experiments_standard_on_policy(
+    grpo_experiments(
         model_id,
         prompt,
         reward_fn,
@@ -421,6 +421,4 @@ def run_grpo_experiments(seed: int = 0):
 
 
 if __name__ == "__main__":
-    for seed in range(4):
-        print(f"=====================seed: {seed}================================")
-        run_grpo_experiments(seed)
+    ...

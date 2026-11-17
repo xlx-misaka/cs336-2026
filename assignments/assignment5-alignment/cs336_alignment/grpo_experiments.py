@@ -9,6 +9,7 @@ import wandb
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from cs336_alignment.checkpoint import get_model_and_tokenizer
+from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from cs336_alignment.train_utils import grpo_train_step
 from cs336_alignment.vllm_utils import VLLMServer
 
@@ -96,9 +97,7 @@ def grpo_experiments_standard_on_policy(
     baseline: Literal["mean", "none"] = "mean",
     advantage_eps: float = 1e-6,
     advantage_normalizer: Literal["std", "none", "mean"] = "std",
-    importance_reweighting_method: Literal[
-        "none", "noclip", "grpo", "gspo"
-    ] = "none",
+    importance_reweighting_method: Literal["none", "noclip", "grpo", "gspo"] = "none",
     loss_normalization: Literal["sequence", "constant"] = "sequence",
     old_log_probs: torch.Tensor | None = None,
     cliprange: float | None = None,
@@ -109,14 +108,18 @@ def grpo_experiments_standard_on_policy(
     Args:
         model_id (str): Hugging Face 模型 ID 或本地模型目录。
         prompt (str): 包含问题占位符的提示模板。
+        reward_fn (Callable[[str, str], dict[str, float]]): 奖励函数，返回
+            "reward"、"format_reward"、"answer_reward" 三个字段。r1_zero
+            使用 drgrpo_grader.r1_zero_reward_fn，question_only 使用
+            drgrpo_grader.question_only_reward_fn。
         train_set_path (Path | str): 训练集 JSONL 文件路径。
         valid_set_path (Path | str): 验证集 JSONL 文件路径。
         sampling_hyperparameters (dict[str, Any]): 回答生成配置，包含以下字段：
             temperature (float): 采样温度，参考值为 1.0。
             max_tokens (int): 每条回答的最大生成 token 数，参考值为 512。
-            n (int): 每个输入 prompt 生成的回答数。问题只输入一次时可设为
-                group_size；prompt 已重复 group_size 次时应设为 1。
-            seed (int): 当前实验使用的生成随机种子。
+            n (int): 每个输入 prompt 生成的回答数。当前实现会忽略该字段，
+                统一设为 group_size；每个问题只向 vLLM 发送一次。
+            seed (int): 训练集/验证集采样与生成共用的随机种子。
             stop (list[str]): 停止字符串，需匹配提示模板。
                 r1_zero 使用 ["</answer>"]。
             include_stop_str_in_output (bool): 是否保留停止字符串。
@@ -128,6 +131,8 @@ def grpo_experiments_standard_on_policy(
             weight_decay (float): 权重衰减，参考值为 0.0。
             rollout_batch_size (int): 每轮生成的回答总数，参考值为 256。
             train_batch_size (int): 每次完整训练更新的回答数，参考值为 256。
+                注意：当前实现只做合法性校验，实际每次更新使用整个 rollout
+                batch（rollout_batch_size 条回答）。
             group_size (int): 每个问题对应的回答数，参考值为 8。
             gradient_accumulation_steps (int): 梯度累积步数，参考值为 32。
             max_grad_norm (float | None): 梯度裁剪阈值，参考值为 1.0。
@@ -138,6 +143,11 @@ def grpo_experiments_standard_on_policy(
             eval_interval (int): 评测间隔，以 rollout batch 数计，参考值为 10。
             log_rollouts_interval (int): 保存生成文本的间隔，以 rollout batch
                 数计，参考值为 40。
+        policy_device (str): policy 模型所在设备，默认 "cuda:0"。必须带 GPU
+            编号，不能只写 "cuda"。
+        vllm_gpu (int): vLLM 服务使用的 GPU 编号，默认 1。需要与
+            policy_device 使用不同的 GPU。
+        vllm_port (int): vLLM HTTP 服务端口，默认 8000。
         baseline (Literal["mean", "none"]): 组内奖励基线，默认 "mean"。
         advantage_eps (float): 归一化时防止除零的小常数，默认 1e-6。
         advantage_normalizer (Literal["std", "none", "mean"]): advantage
@@ -148,13 +158,16 @@ def grpo_experiments_standard_on_policy(
             默认 "sequence"。
         old_log_probs (torch.Tensor | None): 旧的 log_probs，默认 None；
             on-policy 实验不需要。
-        cliprange (float | None): clip range，默认 None；用于 PPO 等算法。
+        cliprange (float | None): clip range，默认 None；
+            importance_reweighting_method 为 "grpo" 或 "gspo" 时使用。
         normalization_constant (int | None): 归一化常数，默认 None；
             用于 "constant" 聚合方式。
 
     Notes:
         算法选项通过函数参数传入，未显式传参时使用上述默认值。
-        实际生效的配置会写入 W&B config。
+        写入 W&B config 的是 model_id、sampling_hyperparameters、
+        training_hyperparameters 以及算法参数；policy_device、vllm_gpu、
+        vllm_port、old_log_probs 不会写入。
         batch size 按回答数计：256 条回答、group_size 为 8，对应 32 个问题。
     """
 
@@ -360,3 +373,51 @@ def grpo_experiments_standard_on_policy(
 
     server.stop()
     run.finish()
+
+
+def run_grpo_experiments():
+    model_id = "models/OLMo-2-0425-1B"
+
+    with open("cs336_alignment/prompts/r1_zero.prompt") as f:
+        prompt = f.read()
+
+    reward_fn = r1_zero_reward_fn
+    train_set_path = "data/gsm8k/train.jsonl"
+    valid_set_path = "data/gsm8k/test.jsonl"
+    sampling_hyperparameters = {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "max_tokens": 512,
+        "seed": 0,
+        "stop": ["</answer>"],
+        "include_stop_str_in_output": True,
+    }
+    training_hyperparameters = {
+        "learning_rate": 1e-5,
+        "betas": (0.9, 0.95),
+        "weight_decay": 0.0,
+        "rollout_batch_size": 256,
+        "train_batch_size": 256,
+        "group_size": 8,
+        "gradient_accumulation_steps": 32,
+        "max_grad_norm": 1,
+        "num_rollout_steps": 200,
+        "n_train_examples": 6400,
+        "n_val_examples": 1024,
+        "eval_interval": 10,
+        "log_rollouts_interval": 40,
+    }
+    grpo_experiments_standard_on_policy(
+        model_id,
+        prompt,
+        reward_fn,
+        train_set_path,
+        valid_set_path,
+        sampling_hyperparameters,
+        training_hyperparameters,
+        vllm_gpu=1,
+    )
+
+
+if __name__ == "__main__":
+    run_grpo_experiments()

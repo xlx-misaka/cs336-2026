@@ -63,7 +63,7 @@ def parse_args():
 
 
 def run_benchmark(
-    serve: VLLMServer,
+    server: VLLMServer,
     prompt: str,
     sampling_params: dict[str, Any],
     dataset: list[dict[str, Any]],
@@ -72,7 +72,7 @@ def run_benchmark(
     """Runs a benchmark on a given dataset."""
     results: list[dict[str, Any]] = []
     prompts = [prompt.format(question=item["question"]) for item in dataset]
-    outputs = serve.generate_completions(prompts, sampling_params, batch_size=32)
+    outputs = server.generate_completions(prompts, sampling_params, batch_size=32)
     for item, output in zip(dataset, outputs, strict=True):
         question = item["question"]
         answer = item["answer"].rsplit("####", 1)[-1].strip()
@@ -90,7 +90,7 @@ def run_benchmark(
 
 
 def benchmark(args):
-    serve = VLLMServer(
+    server = VLLMServer(
         args.model,
         gpu=args.gpu,
         gpu_memory_utilization=args.gpu_memory_utilization,
@@ -111,14 +111,14 @@ def benchmark(args):
 
     results = {}
     try:
-        serve.start()
+        server.start()
         for name, prompt, reward_fn in prompts:
             params = SAMPLING_PARAMS.copy()
             if name != "question_only":
                 params["stop"] = ["</answer>"]
                 params["include_stop_str_in_output"] = True
             print(f"Running {name} on {len(dataset)} examples...", flush=True)
-            samples = run_benchmark(serve, prompt, params, dataset, reward_fn)
+            samples = run_benchmark(server, prompt, params, dataset, reward_fn)
             accuracy = sum(item["answer_reward"] for item in samples) / len(samples)
             format_rate = sum(item["format_reward"] for item in samples) / len(samples)
             results[name] = {
@@ -128,7 +128,7 @@ def benchmark(args):
             }
             print(f"{name}: accuracy={accuracy:.2%}, format_rate={format_rate:.2%}")
     finally:
-        serve.stop()
+        server.stop()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

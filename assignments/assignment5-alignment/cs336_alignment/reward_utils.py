@@ -31,8 +31,8 @@ def compute_rollout_rewards(
     return (
         raw_rewards,
         {
-            "total_rewards": sum(r["reward"] for r in results) / len(results),
-            "format_rewards": sum(r["format_reward"] for r in results)
+            "mean_reward": sum(r["reward"] for r in results) / len(results),
+            "mean_format_reward": sum(r["format_reward"] for r in results)
             / len(results),
         },
     )

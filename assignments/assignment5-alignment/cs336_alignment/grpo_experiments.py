@@ -376,7 +376,7 @@ def grpo_experiments_standard_on_policy(
     run.finish()
 
 
-def run_grpo_experiments():
+def run_grpo_experiments(seed: int = 0):
     model_id = "models/OLMo-2-0425-1B"
 
     with open("cs336_alignment/prompts/r1_zero.prompt") as f:
@@ -389,7 +389,7 @@ def run_grpo_experiments():
         "temperature": 1.0,
         "top_p": 1.0,
         "max_tokens": 512,
-        "seed": 0,
+        "seed": seed,
         "stop": ["</answer>"],
         "include_stop_str_in_output": True,
     }
@@ -421,4 +421,5 @@ def run_grpo_experiments():
 
 
 if __name__ == "__main__":
-    run_grpo_experiments()
+    for seed in range(4):
+        run_grpo_experiments(seed)

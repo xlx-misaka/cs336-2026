@@ -29,9 +29,9 @@ def _get_data_loader(
     batch_size: int,
     n_examples: int,
     seed: int,
-    shuffle: bool = True,
+    shuffle: bool = False,
 ):
-    if n_examples < 0:
+    if n_examples <= 0:
         raise ValueError("n_examples must be non-negative.")
 
     with open(data_path, encoding="utf-8") as f:
@@ -74,14 +74,9 @@ def _get_rollout_params(
         for _ in range(training_hyperparameters["group_size"])
     ]
     rollout_responses = [completion.text for completion in completions]
-    ground_truths = [
+    repeated_ground_truths = [
         answer.rsplit("####", 1)[-1].strip()
         for answer in batch["answer"]
-        for _ in range(training_hyperparameters["group_size"])
-    ]
-    repeated_ground_truths = [
-        ground_truth
-        for ground_truth in ground_truths
         for _ in range(training_hyperparameters["group_size"])
     ]
     return repeated_prompts, rollout_responses, repeated_ground_truths
@@ -203,9 +198,15 @@ def grpo_experiments_standard_on_policy(
     )
 
     server.start()
-    for step, batch in enumerate(train_loader, 1):
-        if step >= training_hyperparameters["num_rollout_steps"]:
-            break
+    server.init_weight_sync(device)
+
+    train_iter = iter(train_loader)
+    for step in range(1, training_hyperparameters["num_rollout_steps"] + 1):
+        try:
+            batch = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_loader)
+            batch = next(train_iter)
 
         repeated_prompts, rollout_responses, repeated_ground_truths = (
             _get_rollout_params(
@@ -247,6 +248,8 @@ def grpo_experiments_standard_on_policy(
             "train/" + key: val for key, val in train_log.items()
         }
 
+        server.sync_policy_weights(model)
+
         if step % training_hyperparameters["log_rollouts_interval"] == 0:
             rollout_rewards = [
                 reward_fn(response, ground_truth)["reward"]
@@ -264,7 +267,7 @@ def grpo_experiments_standard_on_policy(
                 ],
             )
 
-        if step % training_hyperparameters["eval_interval"]:
+        if step % training_hyperparameters["eval_interval"] == 0:
             mean_reward = 0
             accuracy = 0
             pass_k = [0] * training_hyperparameters["group_size"]
@@ -280,7 +283,7 @@ def grpo_experiments_standard_on_policy(
                     )
                 )
                 for i in range(
-                    len(rollout_responses), training_hyperparameters["group_size"]
+                    0, len(rollout_responses), training_hyperparameters["group_size"]
                 ):
                     flag = False
                     for j in range(training_hyperparameters["group_size"]):
@@ -300,17 +303,18 @@ def grpo_experiments_standard_on_policy(
                 training_hyperparameters["n_val_examples"]
                 * training_hyperparameters["group_size"]
             )
-            pass_k = [x / training_hyperparameters["n_val_examples"] for x in pass_k]
+            pass_k = {
+                f"eval/pass@{i + 1}": x / training_hyperparameters["n_val_examples"]
+                for i, x in enumerate(pass_k)
+            }
 
-            print(
-                f"eval, mean_reward: {mean_reward}, accuracy: {accuracy}, pass_k: {pass_k}"
-            )
+            print(f"eval, mean_reward: {mean_reward}, accuracy: {accuracy}")
             log_data.update(
                 {
                     "eval/mean_reward": mean_reward,
                     "eval/accuracy": accuracy,
-                    "eval/pass_k": pass_k,
                 }
+                | pass_k
             )
 
         run.log(log_data, step=step)

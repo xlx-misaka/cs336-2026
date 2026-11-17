@@ -2,13 +2,13 @@ import json
 import random
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import wandb
 from torch.utils.data import DataLoader, Dataset, Subset
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from cs336_alignment.checkpoint import get_model_and_tokenizer
 from cs336_alignment.train_utils import grpo_train_step
 from cs336_alignment.vllm_utils import VLLMServer
 
@@ -90,7 +90,19 @@ def grpo_experiments_standard_on_policy(
     valid_set_path: Path | str,
     sampling_hyperparameters: dict[str, Any],
     training_hyperparameters: dict[str, Any],
-    device: str = "cuda",
+    policy_device: str = "cuda:0",
+    vllm_gpu: int = 1,
+    vllm_port: int = 8000,
+    baseline: Literal["mean", "none"] = "mean",
+    advantage_eps: float = 1e-6,
+    advantage_normalizer: Literal["std", "none", "mean"] = "std",
+    importance_reweighting_method: Literal[
+        "none", "noclip", "grpo", "gspo"
+    ] = "none",
+    loss_normalization: Literal["sequence", "constant"] = "sequence",
+    old_log_probs: torch.Tensor | None = None,
+    cliprange: float | None = None,
+    normalization_constant: int | None = None,
 ):
     """运行标准 on-policy GRPO 实验。
 
@@ -109,7 +121,8 @@ def grpo_experiments_standard_on_policy(
                 r1_zero 使用 ["</answer>"]。
             include_stop_str_in_output (bool): 是否保留停止字符串。
                 r1_zero 使用 True。
-        training_hyperparameters (dict[str, Any]): 训练及实验流程配置，包含以下字段：
+        training_hyperparameters (dict[str, Any]): 训练及实验流程配置。
+            必填字段：
             learning_rate (float): 学习率，参考值为 1e-5。
             betas (tuple[float, float]): AdamW 的 beta 参数，参考值为 (0.9, 0.95)。
             weight_decay (float): 权重衰减，参考值为 0.0。
@@ -122,27 +135,29 @@ def grpo_experiments_standard_on_policy(
             num_rollout_steps (int): rollout 循环次数，参考值为 200。
             n_train_examples (int): 使用的训练题目数，参考值为 6400。
             n_val_examples (int): 验证题目数，参考值为 1024。
-            num_rollout_steps (int): 训练的总步数，参考值为 200。
             eval_interval (int): 评测间隔，以 rollout batch 数计，参考值为 10。
             log_rollouts_interval (int): 保存生成文本的间隔，以 rollout batch
                 数计，参考值为 40。
-            baseline (str): 组内奖励基线，标准 GRPO 使用 "mean"。
-            advantage_normalizer (str): advantage 归一化方式，标准 GRPO 使用 "std"。
-            advantage_eps (float): 归一化时防止除零的小常数，参考值为 1e-6。
-            importance_reweighting_method (str): 重要性加权方式，on-policy
-                实验使用 "none"。
-            loss_normalization (str): loss 聚合方式，标准 GRPO 使用 "sequence"。
-            old_log_probs (torch.Tensor): 旧的 log_probs，用于 on-policy
-                实验。
-            cliprange (float): clip range，用于 PPO 等算法。
-            normalization_constant (int): 归一化常数，用于 sequence 归一化。
-
+        baseline (Literal["mean", "none"]): 组内奖励基线，默认 "mean"。
+        advantage_eps (float): 归一化时防止除零的小常数，默认 1e-6。
+        advantage_normalizer (Literal["std", "none", "mean"]): advantage
+            归一化方式，默认 "std"。
+        importance_reweighting_method (Literal["none", "noclip", "grpo", "gspo"]):
+            重要性加权方式，默认 "none"。
+        loss_normalization (Literal["sequence", "constant"]): loss 聚合方式，
+            默认 "sequence"。
+        old_log_probs (torch.Tensor | None): 旧的 log_probs，默认 None；
+            on-policy 实验不需要。
+        cliprange (float | None): clip range，默认 None；用于 PPO 等算法。
+        normalization_constant (int | None): 归一化常数，默认 None；
+            用于 "constant" 聚合方式。
 
     Notes:
-        参考值不会自动填充为默认参数，需要在相应组件中显式读取配置。
-        记录到 W&B config 不会自动应用参数。
+        算法选项通过函数参数传入，未显式传参时使用上述默认值。
+        实际生效的配置会写入 W&B config。
         batch size 按回答数计：256 条回答、group_size 为 8，对应 32 个问题。
     """
+
     if (
         training_hyperparameters["rollout_batch_size"]
         % training_hyperparameters["group_size"]
@@ -164,15 +179,18 @@ def grpo_experiments_standard_on_policy(
             "train_batch_size must be greater than or equal to group_size and divisible by group_size."
         )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(model_id).to(device=device)  # type: ignore
+    model, tokenizer = get_model_and_tokenizer(model_id, policy_device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_hyperparameters["learning_rate"],
         betas=training_hyperparameters["betas"],
         weight_decay=training_hyperparameters["weight_decay"],
     )
-    server = VLLMServer(model_id)
+    server = VLLMServer(
+        model_id,
+        gpu=vllm_gpu,
+        port=vllm_port,
+    )
     train_loader = _get_data_loader(
         train_set_path,
         training_hyperparameters["rollout_batch_size"]
@@ -194,11 +212,20 @@ def grpo_experiments_standard_on_policy(
             "model_id": model_id,
             "sampling": sampling_hyperparameters,
             "training": training_hyperparameters,
+            "algorithm": {
+                "baseline": baseline,
+                "advantage_eps": advantage_eps,
+                "advantage_normalizer": advantage_normalizer,
+                "importance_reweighting_method": importance_reweighting_method,
+                "loss_normalization": loss_normalization,
+                "cliprange": cliprange,
+                "normalization_constant": normalization_constant,
+            },
         },
     )
 
     server.start()
-    server.init_weight_sync(device)
+    server.init_weight_sync(policy_device)
 
     train_iter = iter(train_loader)
     for step in range(1, training_hyperparameters["num_rollout_steps"] + 1):
@@ -231,22 +258,20 @@ def grpo_experiments_standard_on_policy(
             rollout_responses=rollout_responses,
             repeated_ground_truths=repeated_ground_truths,
             group_size=training_hyperparameters["group_size"],
-            baseline=training_hyperparameters["baseline"],
-            advantage_eps=training_hyperparameters["advantage_eps"],
-            advantage_normalizer=training_hyperparameters["advantage_normalizer"],
-            importance_reweighting_method=training_hyperparameters[
-                "importance_reweighting_method"
-            ],
-            old_log_probs=training_hyperparameters["old_log_probs"],
-            cliprange=training_hyperparameters["cliprange"],
-            loss_normalization=training_hyperparameters["loss_normalization"],
-            normalization_constant=training_hyperparameters["normalization_constant"],
+            baseline=baseline,
+            advantage_eps=advantage_eps,
+            advantage_normalizer=advantage_normalizer,
+            importance_reweighting_method=importance_reweighting_method,
+            old_log_probs=old_log_probs,
+            cliprange=cliprange,
+            loss_normalization=loss_normalization,
+            normalization_constant=normalization_constant,
         )
 
         print(f"step: {step}, loss: {loss}, mean_reward: {train_log['mean_reward']}")
         log_data: dict[str, Any] = {
             "train/" + key: val for key, val in train_log.items()
-        }
+        } | {"train/loss": loss}
 
         server.sync_policy_weights(model)
 
@@ -270,6 +295,7 @@ def grpo_experiments_standard_on_policy(
         if step % training_hyperparameters["eval_interval"] == 0:
             mean_reward = 0
             mean_format_reward = 0
+            mean_response_length = 0
             accuracy = 0
             pass_k = [0] * training_hyperparameters["group_size"]
 
@@ -297,11 +323,16 @@ def grpo_experiments_standard_on_policy(
                         pass_k[j] += flag
                         mean_reward += reward_metadata["reward"]
                         mean_format_reward += reward_metadata["format_reward"]
+                        mean_response_length += len(rollout_responses[i + j])
             mean_reward /= (
                 training_hyperparameters["n_val_examples"]
                 * training_hyperparameters["group_size"]
             )
             mean_format_reward /= (
+                training_hyperparameters["n_val_examples"]
+                * training_hyperparameters["group_size"]
+            )
+            mean_response_length /= (
                 training_hyperparameters["n_val_examples"]
                 * training_hyperparameters["group_size"]
             )
@@ -319,6 +350,7 @@ def grpo_experiments_standard_on_policy(
                 {
                     "eval/mean_reward": mean_reward,
                     "eval/mean_format_reward": mean_format_reward,
+                    "eval/mean_response_length": mean_response_length,
                     "eval/accuracy": accuracy,
                 }
                 | pass_k

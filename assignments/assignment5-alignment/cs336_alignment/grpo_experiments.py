@@ -484,6 +484,7 @@ def _run_grpo_standard_on_policy_experiments(
 
 def _run_smoke(seed: int = 0) -> None:
     print(f"***** Running smoke test (seed={seed}) *****", flush=True)
+
     _run_grpo_standard_on_policy_experiments(
         seed,
         training_hyperparameters_overrides={
@@ -498,10 +499,11 @@ def _run_smoke(seed: int = 0) -> None:
 
 
 def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
-    """Run a ~50-step correctness check: does validation reward improve?"""
     if steps <= 0:
         raise ValueError("steps must be positive")
+
     eval_interval = max(1, steps // 5)
+
     print(
         f"***** Running correctness check: {steps} steps, "
         f"eval every {eval_interval} *****",
@@ -512,6 +514,7 @@ def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
         "than the first. Rollouts are logged to W&B at the same interval.",
         flush=True,
     )
+
     _run_grpo_standard_on_policy_experiments(
         seed,
         training_hyperparameters_overrides={
@@ -525,6 +528,7 @@ def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
 
 def _run_full():
     print("***** Running full run (4 seeds x 200 steps) *****", flush=True)
+
     for seed in range(4):
         print(f"***** Running seed {seed} *****", flush=True)
         _run_grpo_standard_on_policy_experiments(

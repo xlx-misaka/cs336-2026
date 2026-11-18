@@ -138,19 +138,13 @@ def _run_prompt_ablation():
         "***** Running prompt ablation experiments *****",
         flush=True,
     )
-    for prompt_name, (prompt_path, reward_fn) in zip(
-        [
-            "question_only",
-            "r1_zero_three_shot",
-        ],
-        [
-            ("cs336_alignment/prompts/question_only.prompt", question_only_reward_fn),
-            (
-                "cs336_alignment/prompts/r1_zero_three_shot_gsm8k.prompt",
-                r1_zero_reward_fn,
-            ),
-        ],
-    ):
+    for prompt_path, reward_fn in [
+        ("cs336_alignment/prompts/question_only.prompt", question_only_reward_fn),
+        (
+            "cs336_alignment/prompts/r1_zero_three_shot_gsm8k.prompt",
+            r1_zero_reward_fn,
+        ),
+    ]:
         _run_4_seed_experiments(
             prompt_path=prompt_path,
             reward_fn=reward_fn,

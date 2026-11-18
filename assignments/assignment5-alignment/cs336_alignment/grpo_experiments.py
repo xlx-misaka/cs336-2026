@@ -530,11 +530,17 @@ def _run_full():
     print("***** Running full run (4 seeds x 200 steps) *****", flush=True)
 
     for seed in range(4):
-        print(f"***** Running seed {seed} *****", flush=True)
         _run_grpo_standard_on_policy_experiments(
             seed,
             experiment_name=f"standard-on-policy-seed-{seed}",
         )
+
+
+def _run_learning_rate_ablation():
+    print(
+        "***** Running learning rate experiments *****",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

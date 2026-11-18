@@ -430,7 +430,7 @@ def _run_grpo_standard_on_policy_experiments(
 
 def _run_smoke(seed: int = 0) -> None:
     print(
-        "=== smoke test  ===",
+        "=== smoke test ===",
         flush=True,
     )
     _run_grpo_standard_on_policy_experiments(

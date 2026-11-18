@@ -1,30 +1,32 @@
+from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+from cs336_alignment.drgrpo_grader import question_only_reward_fn, r1_zero_reward_fn
 from cs336_alignment.train_utils import train_grpo
 
 
 def _run_grpo_standard_on_policy_experiments(
-    prompt_path: str = "cs336_alignment/prompts/r1_zero.prompt",
     seed: int = 0,
+    prompt_path: str = "cs336_alignment/prompts/r1_zero.prompt",
+    reward_fn: Callable[[str, str], dict[str, float]] = r1_zero_reward_fn,
     training_hyperparameters_overrides: dict[str, Any] | None = None,
     experiment_name: str = "standard-on-policy",
     group_name: str | None = None,
 ):
     model_id = "models/OLMo-2-0425-1B"
 
-    with open(prompt_path) as f:
+    with open(prompt_path, encoding="utf-8") as f:
         prompt = f.read()
-    if prompt_path.startswith("cs336_alignment/prompts/r1_zero"):
-        prompt_prams = {
+    if Path(prompt_path).name.startswith("r1_zero"):
+        prompt_params = {
             "stop": ["</answer>"],
             "include_stop_str_in_output": True,
         }
     else:
-        prompt_prams = {}
+        prompt_params = {}
 
-    reward_fn = r1_zero_reward_fn
     train_set_path = "data/gsm8k/train.jsonl"
     valid_set_path = "data/gsm8k/test.jsonl"
     sampling_hyperparameters = {
@@ -32,7 +34,7 @@ def _run_grpo_standard_on_policy_experiments(
         "top_p": 1.0,
         "max_tokens": 512,
         "seed": seed,
-    } | prompt_prams
+    } | prompt_params
     training_hyperparameters = {
         "learning_rate": 1e-5,
         "betas": (0.9, 0.95),
@@ -131,19 +133,24 @@ def _run_prompt_ablation():
         "***** Running prompt ablation experiments *****",
         flush=True,
     )
-    for prompt_name, prompt_path in zip(
+    for prompt_name, (prompt_path, reward_fn) in zip(
         [
             "question_only",
             "r1_zero",
             "r1_zero_three_shot",
         ],
         [
-            "cs336_alignment/prompts/question_only.prompt",
-            "cs336_alignment/prompts/r1_zero.prompt",
-            "cs336_alignment/prompts/r1_zero_three_shot_gsm8k.prompt",
+            ("cs336_alignment/prompts/question_only.prompt", question_only_reward_fn),
+            ("cs336_alignment/prompts/r1_zero.prompt", r1_zero_reward_fn),
+            (
+                "cs336_alignment/prompts/r1_zero_three_shot_gsm8k.prompt",
+                r1_zero_reward_fn,
+            ),
         ],
     ):
         _run_grpo_standard_on_policy_experiments(
+            prompt_path=prompt_path,
+            reward_fn=reward_fn,
             experiment_name=f"standard-on-policy-{prompt_name}",
             group_name="Prompt ablation experiments",
         )

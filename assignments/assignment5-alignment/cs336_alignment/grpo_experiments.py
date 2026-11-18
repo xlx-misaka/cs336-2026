@@ -424,8 +424,7 @@ def run_grpo_standard_on_policy_experiments(
     )
 
 
-
-def run_smoke(seed: int = 0) -> None:
+def _run_smoke(seed: int = 0) -> None:
     """Run a 2-step smoke test with tiny train/val sets.
 
     Checks that the model, vLLM server, weight sync, train step and eval

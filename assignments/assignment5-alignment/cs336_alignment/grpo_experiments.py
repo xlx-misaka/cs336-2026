@@ -415,6 +415,9 @@ def _run_grpo_standard_on_policy_experiments(
         "log_rollouts_interval": 40,
         **(training_hyperparameters_overrides or {}),
     }
+
+    print("=" * 40 + f"running {experiment_name}" + "=" * 40)
+
     grpo_experiments(
         model_id,
         prompt,
@@ -452,9 +455,6 @@ def _run_full():
         flush=True,
     )
     for seed in range(4):
-        print(
-            f"===================== seed: {seed} ====================================="
-        )
         _run_grpo_standard_on_policy_experiments(
             seed,
             experiment_name=f"standard-on-policy-seed-{seed}",

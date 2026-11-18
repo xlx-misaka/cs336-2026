@@ -1,5 +1,6 @@
 import json
 import random
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -195,7 +196,25 @@ def grpo_experiments(
             "train_batch_size must be greater than or equal to group_size and divisible by group_size."
         )
 
+    print(
+        f"config | run={experiment_name} | model={model_id} | "
+        f"policy_device={policy_device} | vllm_gpu={vllm_gpu} | "
+        f"vllm_port={vllm_port} | seed={sampling_hyperparameters['seed']} | "
+        f"steps={training_hyperparameters['num_rollout_steps']} | "
+        f"rollout={training_hyperparameters['rollout_batch_size']} | "
+        f"group={training_hyperparameters['group_size']} | "
+        f"accum={training_hyperparameters['gradient_accumulation_steps']} | "
+        f"n_train={training_hyperparameters['n_train_examples']} | "
+        f"n_val={training_hyperparameters['n_val_examples']} | "
+        f"lr={training_hyperparameters['learning_rate']}",
+        flush=True,
+    )
     model, tokenizer = get_model_and_tokenizer(model_id, policy_device)
+    policy_param = next(model.parameters())
+    print(
+        f"policy loaded | dtype={policy_param.dtype} | device={policy_param.device}",
+        flush=True,
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_hyperparameters["learning_rate"],
@@ -240,11 +259,16 @@ def grpo_experiments(
         },
     )
 
+    print(f"starting vLLM on gpu {vllm_gpu}, port {vllm_port} ...", flush=True)
     server.start()
+    print("vLLM ready", flush=True)
+    print("initializing weight sync ...", flush=True)
     server.init_weight_sync(policy_device)
+    print("weight sync ready", flush=True)
 
     train_iter = iter(train_loader)
     for step in range(1, training_hyperparameters["num_rollout_steps"] + 1):
+        step_start = time.monotonic()
         try:
             batch = next(train_iter)
         except StopIteration:
@@ -284,12 +308,22 @@ def grpo_experiments(
             normalization_constant=normalization_constant,
         )
 
-        print(f"step: {step}, loss: {loss}, mean_reward: {train_log['mean_reward']}")
+        loss_value = loss.item()
         log_data: dict[str, Any] = {
-            "train/" + key: val for key, val in train_log.items()
-        } | {"train/loss": loss}
+            "train/" + key: float(val) if isinstance(val, torch.Tensor) else val
+            for key, val in train_log.items()
+        } | {"train/loss": loss_value}
 
         server.sync_policy_weights(model)
+        print(
+            f"step {step}/{training_hyperparameters['num_rollout_steps']} | "
+            f"loss {loss_value:.4f} | grad {float(train_log['gradient_norm']):.3f} | "
+            f"entropy {float(train_log['token_entropy']):.3f} | "
+            f"reward {train_log['mean_reward']:.3f} | "
+            f"fmt {train_log['mean_format_reward']:.3f} | "
+            f"{time.monotonic() - step_start:.1f}s",
+            flush=True,
+        )
 
         if step % training_hyperparameters["log_rollouts_interval"] == 0:
             rollout_rewards = [
@@ -309,6 +343,8 @@ def grpo_experiments(
             )
 
         if step % training_hyperparameters["eval_interval"] == 0:
+            eval_start = time.monotonic()
+            print(f"eval start (step {step})", flush=True)
             mean_reward = 0
             mean_format_reward = 0
             mean_response_length = 0
@@ -361,7 +397,15 @@ def grpo_experiments(
                 for i, x in enumerate(pass_k)
             }
 
-            print(f"eval, mean_reward: {mean_reward}, accuracy: {accuracy}")
+            group_size = training_hyperparameters["group_size"]
+            print(
+                f"eval done in {time.monotonic() - eval_start:.1f}s | "
+                f"reward {mean_reward:.3f} | fmt {mean_format_reward:.3f} | "
+                f"len {mean_response_length:.1f} (chars) | acc {accuracy:.3f} | "
+                f"pass@1 {pass_k['eval/pass@1']:.3f} | "
+                f"pass@{group_size} {pass_k[f'eval/pass@{group_size}']:.3f}",
+                flush=True,
+            )
             log_data.update(
                 {
                     "eval/mean_reward": mean_reward,
@@ -416,7 +460,7 @@ def _run_grpo_standard_on_policy_experiments(
         **(training_hyperparameters_overrides or {}),
     }
 
-    print("=" * 40 + f"running {experiment_name}" + "=" * 40)
+    print(f"=== running {experiment_name} | seed {seed} ===", flush=True)
 
     grpo_experiments(
         model_id,
@@ -432,10 +476,7 @@ def _run_grpo_standard_on_policy_experiments(
 
 
 def _run_smoke(seed: int = 0) -> None:
-    print(
-        "=== smoke test ===",
-        flush=True,
-    )
+    print(f"=== smoke test | seed {seed} ===", flush=True)
     _run_grpo_standard_on_policy_experiments(
         seed,
         training_hyperparameters_overrides={
@@ -450,11 +491,9 @@ def _run_smoke(seed: int = 0) -> None:
 
 
 def _run_full():
-    print(
-        "=== full test ===",
-        flush=True,
-    )
+    print("=== full run: 4 seeds x 200 steps ===", flush=True)
     for seed in range(4):
+        print(f"=== seed {seed} ===", flush=True)
         _run_grpo_standard_on_policy_experiments(
             seed,
             experiment_name=f"standard-on-policy-seed-{seed}",

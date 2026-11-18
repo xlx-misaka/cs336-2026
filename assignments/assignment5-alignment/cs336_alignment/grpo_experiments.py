@@ -159,4 +159,12 @@ def _run_prompt_ablation():
 
 
 if __name__ == "__main__":
-    ...
+    _run_smoke()
+
+    # _run_correctness_check()
+
+    # _run_4_seed_experiments()
+
+    # _run_learning_rate_ablation()
+
+    # _run_prompt_ablation()

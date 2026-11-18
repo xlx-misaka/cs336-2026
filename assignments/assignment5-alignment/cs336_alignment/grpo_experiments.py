@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
@@ -53,6 +54,7 @@ def _run_grpo_standard_on_policy_experiments(
         training_hyperparameters,
         vllm_gpu=1,
         experiment_name=experiment_name,
+        group_name=group_name,
     )
 
 

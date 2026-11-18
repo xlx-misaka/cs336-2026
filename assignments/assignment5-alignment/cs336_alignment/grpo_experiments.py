@@ -430,7 +430,7 @@ def _run_grpo_standard_on_policy_experiments(
 
 def _run_smoke(seed: int = 0) -> None:
     print(
-        "=== smoke: 2 steps, 64 train prompts, 32 val prompts, eval/log every step ===",
+        "=== smoke test  ===",
         flush=True,
     )
     _run_grpo_standard_on_policy_experiments(
@@ -447,6 +447,10 @@ def _run_smoke(seed: int = 0) -> None:
 
 
 def _run_full():
+    print(
+        "=== full test  ===",
+        flush=True,
+    )
     for seed in range(4):
         print(
             f"===================== seed: {seed} ====================================="

@@ -101,12 +101,17 @@ def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
     )
 
 
-def _run_4_seed_experiments():
+def _run_4_seed_experiments(
+    prompt_path: str = "cs336_alignment/prompts/r1_zero.prompt",
+    reward_fn: Callable[[str, str], dict[str, float]] = r1_zero_reward_fn,
+):
     print("***** Running 4 seed experiments *****", flush=True)
 
     for seed in range(4):
         _run_grpo_standard_on_policy_experiments(
             seed=seed,
+            prompt_path=prompt_path,
+            reward_fn=reward_fn,
             experiment_name=f"standard-on-policy-seed-{seed}",
             group_name="4 seed experiments",
         )
@@ -136,23 +141,19 @@ def _run_prompt_ablation():
     for prompt_name, (prompt_path, reward_fn) in zip(
         [
             "question_only",
-            "r1_zero",
             "r1_zero_three_shot",
         ],
         [
             ("cs336_alignment/prompts/question_only.prompt", question_only_reward_fn),
-            ("cs336_alignment/prompts/r1_zero.prompt", r1_zero_reward_fn),
             (
                 "cs336_alignment/prompts/r1_zero_three_shot_gsm8k.prompt",
                 r1_zero_reward_fn,
             ),
         ],
     ):
-        _run_grpo_standard_on_policy_experiments(
+        _run_4_seed_experiments(
             prompt_path=prompt_path,
             reward_fn=reward_fn,
-            experiment_name=f"standard-on-policy-{prompt_name}",
-            group_name="Prompt ablation experiments",
         )
 
 

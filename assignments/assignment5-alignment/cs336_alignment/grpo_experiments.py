@@ -197,20 +197,20 @@ def grpo_experiments(
         )
 
     print("***** Running training *****", flush=True)
-    print(f"  run = {experiment_name}, model = {model_id}", flush=True)
+    print(f"run = {experiment_name}, model = {model_id}", flush=True)
     print(
-        f"  devices = policy={policy_device}, vllm=gpu{vllm_gpu}:{vllm_port}",
+        f"devices = policy={policy_device}, vllm=gpu{vllm_gpu}:{vllm_port}",
         flush=True,
     )
     print(
-        f"  schedule = steps={training_hyperparameters['num_rollout_steps']}, "
+        f"schedule = steps={training_hyperparameters['num_rollout_steps']}, "
         f"rollout={training_hyperparameters['rollout_batch_size']}, "
         f"group={training_hyperparameters['group_size']}, "
         f"accum={training_hyperparameters['gradient_accumulation_steps']}",
         flush=True,
     )
     print(
-        f"  data = n_train={training_hyperparameters['n_train_examples']}, "
+        f"data = n_train={training_hyperparameters['n_train_examples']}, "
         f"n_val={training_hyperparameters['n_val_examples']}, "
         f"seed={sampling_hyperparameters['seed']}, "
         f"lr={training_hyperparameters['learning_rate']}",
@@ -218,7 +218,7 @@ def grpo_experiments(
     )
     model, tokenizer = get_model_and_tokenizer(model_id, policy_device)
     policy_param = next(model.parameters())
-    print(f"  policy = {policy_param.dtype} on {policy_param.device}", flush=True)
+    print(f"policy = {policy_param.dtype} on {policy_param.device}", flush=True)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_hyperparameters["learning_rate"],
@@ -351,8 +351,8 @@ def grpo_experiments(
             group_size = training_hyperparameters["group_size"]
             n_val = training_hyperparameters["n_val_examples"]
             print("***** Running evaluation *****", flush=True)
-            print(f"  Num examples = {n_val}", flush=True)
-            print(f"  Num rollouts = {n_val * group_size}", flush=True)
+            print(f"Num examples = {n_val}", flush=True)
+            print(f"Num rollouts = {n_val * group_size}", flush=True)
             mean_reward = 0
             mean_format_reward = 0
             mean_response_length = 0

@@ -448,7 +448,7 @@ def _run_smoke(seed: int = 0) -> None:
 
 def _run_full():
     print(
-        "=== full test  ===",
+        "=== full test ===",
         flush=True,
     )
     for seed in range(4):

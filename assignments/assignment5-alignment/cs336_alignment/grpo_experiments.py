@@ -381,7 +381,7 @@ def grpo_experiments(
 def _run_grpo_standard_on_policy_experiments(
     seed: int = 0,
     training_hyperparameters_overrides: dict[str, Any] | None = None,
-    experiment_name: str = "grpo_standard_on_policy",
+    experiment_name: str = "standard-on-policy",
 ):
     model_id = "models/OLMo-2-0425-1B"
 
@@ -447,7 +447,7 @@ def _run_smoke(seed: int = 0) -> None:
             "eval_interval": 1,
             "log_rollouts_interval": 1,
         },
-        experiment_name="smoke",
+        experiment_name="standard-on-policy-smoke",
     )
 
 
@@ -455,7 +455,7 @@ def _run_full():
     for seed in range(4):
         _run_grpo_standard_on_policy_experiments(
             seed,
-            experiment_name=f"grpo_standard_on_policy_seed_{seed}",
+            experiment_name=f"standard-on-policy-seed-{seed}",
         )
 
 

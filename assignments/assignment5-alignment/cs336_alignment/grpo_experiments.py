@@ -429,11 +429,6 @@ def _run_grpo_standard_on_policy_experiments(
 
 
 def _run_smoke(seed: int = 0) -> None:
-    """Run a 2-step smoke test with tiny train/val sets.
-
-    Checks that the model, vLLM server, weight sync, train step and eval
-    all work, without triggering a long training run.
-    """
     print(
         "=== smoke: 2 steps, 64 train prompts, 32 val prompts, eval/log every step ===",
         flush=True,
@@ -453,6 +448,9 @@ def _run_smoke(seed: int = 0) -> None:
 
 def _run_full():
     for seed in range(4):
+        print(
+            f"===================== seed: {seed} ====================================="
+        )
         _run_grpo_standard_on_policy_experiments(
             seed,
             experiment_name=f"standard-on-policy-seed-{seed}",

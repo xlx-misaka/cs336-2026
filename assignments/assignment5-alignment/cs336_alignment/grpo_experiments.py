@@ -1,4 +1,5 @@
 import json
+import math
 import random
 import time
 from collections.abc import Callable
@@ -84,6 +85,239 @@ def _get_rollout_params(
     return repeated_prompts, rollout_responses, repeated_ground_truths
 
 
+_REQUIRED_TRAINING_KEYS = (
+    "learning_rate",
+    "betas",
+    "weight_decay",
+    "rollout_batch_size",
+    "train_batch_size",
+    "group_size",
+    "gradient_accumulation_steps",
+    "max_grad_norm",
+    "num_rollout_steps",
+    "n_train_examples",
+    "n_val_examples",
+    "eval_interval",
+    "log_rollouts_interval",
+)
+
+
+_REQUIRED_SAMPLING_KEYS = ("temperature", "max_tokens", "seed")
+_ALLOWED_SAMPLING_KEYS = {
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "n",
+    "seed",
+    "stop",
+    "include_stop_str_in_output",
+}
+
+
+def _check_hyperparameters(
+    sampling_hyperparameters: dict[str, Any], training_hyperparameters: dict[str, Any]
+) -> None:
+    """Validate sampling/training hyperparameters before any model/GPU work."""
+    if not isinstance(training_hyperparameters, dict):
+        raise TypeError("training_hyperparameters must be a dict")
+    if not isinstance(sampling_hyperparameters, dict):
+        raise TypeError("sampling_hyperparameters must be a dict")
+
+    missing = [
+        key for key in _REQUIRED_TRAINING_KEYS if key not in training_hyperparameters
+    ]
+    if missing:
+        raise ValueError(
+            f"training_hyperparameters is missing required keys: {missing}"
+        )
+    unknown_training = sorted(
+        set(training_hyperparameters) - set(_REQUIRED_TRAINING_KEYS)
+    )
+    if unknown_training:
+        raise ValueError(
+            f"training_hyperparameters has unknown keys: {unknown_training}"
+        )
+
+    missing_sampling = [
+        key for key in _REQUIRED_SAMPLING_KEYS if key not in sampling_hyperparameters
+    ]
+    if missing_sampling:
+        raise ValueError(
+            f"sampling_hyperparameters is missing required keys: {missing_sampling}"
+        )
+    unknown_sampling = sorted(
+        set(sampling_hyperparameters) - _ALLOWED_SAMPLING_KEYS
+    )
+    if unknown_sampling:
+        raise ValueError(
+            f"sampling_hyperparameters has unknown keys: {unknown_sampling}"
+        )
+
+    def _positive_int(key: str) -> int:
+        value = training_hyperparameters[key]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(
+                f"training_hyperparameters[{key!r}] must be an integer, got {value!r}"
+            )
+        if value <= 0:
+            raise ValueError(
+                f"training_hyperparameters[{key!r}] must be a positive integer, "
+                f"got {value!r}"
+            )
+        return value
+
+    def _finite_number(key: str, *, allow_zero: bool) -> float:
+        value = training_hyperparameters[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(
+                f"training_hyperparameters[{key!r}] must be a number, got {value!r}"
+            )
+        number = float(value)
+        invalid = (
+            not math.isfinite(number) or number < 0 or (number == 0 and not allow_zero)
+        )
+        if invalid:
+            kind = "non-negative" if allow_zero else "positive"
+            raise ValueError(
+                f"training_hyperparameters[{key!r}] must be a {kind} finite "
+                f"number, got {value!r}"
+            )
+        return number
+
+    group_size = _positive_int("group_size")
+    if group_size < 2:
+        raise ValueError(
+            "training_hyperparameters['group_size'] must be at least 2, "
+            f"got {group_size}"
+        )
+
+    for key in ("rollout_batch_size", "train_batch_size"):
+        batch_size = _positive_int(key)
+        if batch_size % group_size != 0 or batch_size < group_size:
+            raise ValueError(
+                f"training_hyperparameters[{key!r}] must be a multiple of "
+                f"group_size ({group_size}) and at least group_size, "
+                f"got {batch_size}"
+            )
+
+    for key in (
+        "gradient_accumulation_steps",
+        "num_rollout_steps",
+        "n_train_examples",
+        "n_val_examples",
+        "eval_interval",
+        "log_rollouts_interval",
+    ):
+        _positive_int(key)
+
+    _finite_number("learning_rate", allow_zero=False)
+    _finite_number("weight_decay", allow_zero=True)
+
+    if training_hyperparameters["max_grad_norm"] is not None:
+        _finite_number("max_grad_norm", allow_zero=False)
+
+    betas = training_hyperparameters["betas"]
+    if not isinstance(betas, (tuple, list)):
+        raise TypeError(
+            f"training_hyperparameters['betas'] must be a pair of floats, got {betas!r}"
+        )
+    if len(betas) != 2:
+        raise ValueError(
+            f"training_hyperparameters['betas'] must be a pair of floats, got {betas!r}"
+        )
+    for beta in betas:
+        if isinstance(beta, bool) or not isinstance(beta, (int, float)):
+            raise TypeError(
+                "training_hyperparameters['betas'] entries must be numbers, "
+                f"got {betas!r}"
+            )
+        if not 0.0 <= float(beta) < 1.0:
+            raise ValueError(
+                "training_hyperparameters['betas'] entries must be numbers "
+                f"in [0, 1), got {betas!r}"
+            )
+
+    temperature = sampling_hyperparameters["temperature"]
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+        raise TypeError(
+            f"sampling_hyperparameters['temperature'] must be a number, "
+            f"got {temperature!r}"
+        )
+    if not math.isfinite(float(temperature)) or float(temperature) <= 0:
+        raise ValueError(
+            "sampling_hyperparameters['temperature'] must be a positive finite "
+            f"number; greedy sampling is incompatible with group_size={group_size}"
+        )
+
+    max_tokens = sampling_hyperparameters["max_tokens"]
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int):
+        raise TypeError(
+            f"sampling_hyperparameters['max_tokens'] must be an integer, "
+            f"got {max_tokens!r}"
+        )
+    if max_tokens <= 0:
+        raise ValueError(
+            f"sampling_hyperparameters['max_tokens'] must be positive, "
+            f"got {max_tokens!r}"
+        )
+
+    seed = sampling_hyperparameters["seed"]
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(
+            f"sampling_hyperparameters['seed'] must be an integer, got {seed!r}"
+        )
+
+    if "n" in sampling_hyperparameters:
+        n = sampling_hyperparameters["n"]
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise TypeError(
+                f"sampling_hyperparameters['n'] must be an integer, got {n!r}"
+            )
+        if n <= 0:
+            raise ValueError(
+                f"sampling_hyperparameters['n'] must be positive, got {n!r}"
+            )
+        if n != group_size:
+            raise ValueError(
+                "sampling_hyperparameters['n'] is overridden by group_size "
+                f"({group_size}); omit it or set n={group_size}, got {n}"
+            )
+
+    if "top_p" in sampling_hyperparameters:
+        top_p = sampling_hyperparameters["top_p"]
+        if isinstance(top_p, bool) or not isinstance(top_p, (int, float)):
+            raise TypeError(
+                f"sampling_hyperparameters['top_p'] must be a number, got {top_p!r}"
+            )
+        if not math.isfinite(float(top_p)) or not 0.0 < float(top_p) <= 1.0:
+            raise ValueError(
+                "sampling_hyperparameters['top_p'] must be in (0, 1], "
+                f"got {top_p!r}"
+            )
+        if float(top_p) != 1.0:
+            raise ValueError(
+                "sampling_hyperparameters['top_p'] is not forwarded to vLLM; "
+                "only top_p=1.0 is currently supported"
+            )
+
+    stop = sampling_hyperparameters.get("stop")
+    if stop is not None and (
+        not isinstance(stop, (list, tuple))
+        or not all(isinstance(item, str) and item for item in stop)
+    ):
+        raise ValueError(
+            "sampling_hyperparameters['stop'] must be a list of non-empty "
+            f"strings or None, got {stop!r}"
+        )
+
+    include_stop = sampling_hyperparameters.get("include_stop_str_in_output")
+    if include_stop is not None and not isinstance(include_stop, bool):
+        raise TypeError(
+            "sampling_hyperparameters['include_stop_str_in_output'] must be a "
+            f"bool, got {include_stop!r}"
+        )
+
+
 def grpo_experiments(
     model_id: str,
     prompt: str,
@@ -119,9 +353,11 @@ def grpo_experiments(
         valid_set_path (Path | str): 验证集 JSONL 文件路径。
         sampling_hyperparameters (dict[str, Any]): 回答生成配置，包含以下字段：
             temperature (float): 采样温度，参考值为 1.0。
+            top_p (float): 采样 top-p，参考值为 1.0。vllm_utils 目前不转发
+                该字段，只支持 1.0。
             max_tokens (int): 每条回答的最大生成 token 数，参考值为 512。
-            n (int): 每个输入 prompt 生成的回答数。当前实现会忽略该字段，
-                统一设为 group_size；每个问题只向 vLLM 发送一次。
+            n (int): 每个输入 prompt 生成的回答数。当前实现统一使用
+                group_size；如果提供，必须等于 group_size，否则会报错。
             seed (int): 训练集/验证集采样与生成共用的随机种子。
             stop (list[str]): 停止字符串，需匹配提示模板。
                 r1_zero 使用 ["</answer>"]。
@@ -175,6 +411,7 @@ def grpo_experiments(
         vllm_port、old_log_probs 不会写入。
         batch size 按回答数计：256 条回答、group_size 为 8，对应 32 个问题。
     """
+    _check_hyperparameters(sampling_hyperparameters, training_hyperparameters)
 
     print("***** Running training *****", flush=True)
     print(f"run = {experiment_name}, model = {model_id}", flush=True)
@@ -196,6 +433,7 @@ def grpo_experiments(
         f"lr={training_hyperparameters['learning_rate']}",
         flush=True,
     )
+
     model, tokenizer = get_model_and_tokenizer(model_id, policy_device)
     policy_param = next(model.parameters())
     print(f"policy = {policy_param.dtype} on {policy_param.device}", flush=True)
@@ -523,7 +761,7 @@ def _run_learning_rate_ablation():
                 "learning_rate": learning_rate,
             },
             experiment_name=f"standard-on-policy-learning-rate-{learning_rate:.0e}",
-            group_name="Learning rate ablation  experiments",
+            group_name="Learning rate ablation experiments",
         )
 
 

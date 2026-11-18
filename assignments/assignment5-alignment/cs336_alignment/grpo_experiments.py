@@ -103,6 +103,7 @@ def grpo_experiments(
     old_log_probs: torch.Tensor | None = None,
     cliprange: float | None = None,
     normalization_constant: int | None = None,
+    experiment_name: str = "standard-on-policy",
 ):
     """运行标准 on-policy GRPO 实验。
 
@@ -163,6 +164,7 @@ def grpo_experiments(
             importance_reweighting_method 为 "grpo" 或 "gspo" 时使用。
         normalization_constant (int | None): 归一化常数，默认 None；
             用于 "constant" 聚合方式。
+        experiment_name (str): 实验名称，默认为"standard-on-policy"。
 
     Notes:
         算法选项通过函数参数传入，未显式传参时使用上述默认值。
@@ -221,7 +223,7 @@ def grpo_experiments(
     )
     run = wandb.init(
         project="cs336-grpo",
-        name=f"standard-on-policy-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        name=f"{experiment_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
         config={
             "model_id": model_id,
             "sampling": sampling_hyperparameters,
@@ -376,9 +378,10 @@ def grpo_experiments(
     run.finish()
 
 
-def run_grpo_standard_on_policy_experiments(
+def _run_grpo_standard_on_policy_experiments(
     seed: int = 0,
-    overrides: dict[str, Any] | None = None,
+    training_hyperparameters_overrides: dict[str, Any] | None = None,
+    experiment_name: str = "grpo_standard_on_policy",
 ):
     model_id = "models/OLMo-2-0425-1B"
 
@@ -410,7 +413,7 @@ def run_grpo_standard_on_policy_experiments(
         "n_val_examples": 1024,
         "eval_interval": 10,
         "log_rollouts_interval": 40,
-        **(overrides or {}),
+        **(training_hyperparameters_overrides or {}),
     }
     grpo_experiments(
         model_id,
@@ -421,6 +424,7 @@ def run_grpo_standard_on_policy_experiments(
         sampling_hyperparameters,
         training_hyperparameters,
         vllm_gpu=1,
+        experiment_name=experiment_name,
     )
 
 
@@ -434,16 +438,25 @@ def _run_smoke(seed: int = 0) -> None:
         "=== smoke: 2 steps, 64 train prompts, 32 val prompts, eval/log every step ===",
         flush=True,
     )
-    run_grpo_standard_on_policy_experiments(
+    _run_grpo_standard_on_policy_experiments(
         seed,
-        overrides={
+        training_hyperparameters_overrides={
             "num_rollout_steps": 2,
             "n_train_examples": 64,
             "n_val_examples": 32,
             "eval_interval": 1,
             "log_rollouts_interval": 1,
         },
+        experiment_name="smoke",
     )
+
+
+def _run_full():
+    for seed in range(4):
+        _run_grpo_standard_on_policy_experiments(
+            seed,
+            experiment_name=f"grpo_standard_on_policy_seed_{seed}",
+        )
 
 
 if __name__ == "__main__":

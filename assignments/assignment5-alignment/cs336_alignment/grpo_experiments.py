@@ -2,7 +2,6 @@ import json
 import random
 import time
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -105,6 +104,7 @@ def grpo_experiments(
     cliprange: float | None = None,
     normalization_constant: int | None = None,
     experiment_name: str = "standard-on-policy",
+    group_name: str | None = None,
 ):
     """运行标准 on-policy GRPO 实验。
 
@@ -166,6 +166,7 @@ def grpo_experiments(
         normalization_constant (int | None): 归一化常数，默认 None；
             用于 "constant" 聚合方式。
         experiment_name (str): 实验名称，默认为"standard-on-policy"。
+        group_name (str | None): 实验组名称，默认 None。
 
     Notes:
         算法选项通过函数参数传入，未显式传参时使用上述默认值。
@@ -174,27 +175,6 @@ def grpo_experiments(
         vllm_port、old_log_probs 不会写入。
         batch size 按回答数计：256 条回答、group_size 为 8，对应 32 个问题。
     """
-
-    if (
-        training_hyperparameters["rollout_batch_size"]
-        % training_hyperparameters["group_size"]
-        != 0
-        or training_hyperparameters["rollout_batch_size"]
-        < training_hyperparameters["group_size"]
-    ):
-        raise ValueError(
-            "rollout_batch_size must be divisible by group_size and greater than group_size."
-        )
-    if (
-        training_hyperparameters["train_batch_size"]
-        < training_hyperparameters["group_size"]
-        or training_hyperparameters["train_batch_size"]
-        % training_hyperparameters["group_size"]
-        != 0
-    ):
-        raise ValueError(
-            "train_batch_size must be greater than or equal to group_size and divisible by group_size."
-        )
 
     print("***** Running training *****", flush=True)
     print(f"run = {experiment_name}, model = {model_id}", flush=True)
@@ -246,7 +226,7 @@ def grpo_experiments(
     )
     run = wandb.init(
         project="cs336-grpo",
-        name=f"{experiment_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        name=f"{experiment_name}",
         config={
             "model_id": model_id,
             "sampling": sampling_hyperparameters,
@@ -261,6 +241,7 @@ def grpo_experiments(
                 "normalization_constant": normalization_constant,
             },
         },
+        group=group_name,
     )
 
     print(f"***** Starting vLLM (gpu={vllm_gpu}, port={vllm_port}) *****", flush=True)
@@ -311,23 +292,25 @@ def grpo_experiments(
             normalization_constant=normalization_constant,
         )
 
-        loss_value = loss.item()
-        log_data: dict[str, Any] = {
-            "train/" + key: float(val) if isinstance(val, torch.Tensor) else val
-            for key, val in train_log.items()
-        } | {"train/loss": loss_value}
-
         server.sync_policy_weights(model)
-        total_steps = training_hyperparameters["num_rollout_steps"]
+
         metrics = {
-            "loss": round(loss_value, 4),
+            "loss": round(loss.item(), 4),
             "grad_norm": round(float(train_log["gradient_norm"]), 3),
             "entropy": round(float(train_log["token_entropy"]), 3),
             "reward": round(float(train_log["mean_reward"]), 3),
             "format_reward": round(float(train_log["mean_format_reward"]), 3),
             "learning_rate": training_hyperparameters["learning_rate"],
         }
-        print(f"step {step}/{total_steps}: {metrics}", flush=True)
+        print(
+            f"step {step}/{training_hyperparameters['num_rollout_steps']}: {metrics}",
+            flush=True,
+        )
+
+        log_data: dict[str, Any] = {
+            "train/" + key: float(val) if isinstance(val, torch.Tensor) else val
+            for key, val in train_log.items()
+        } | {"train/loss": loss.item()}
 
         if step % training_hyperparameters["log_rollouts_interval"] == 0:
             rollout_rewards = [
@@ -336,6 +319,7 @@ def grpo_experiments(
                     rollout_responses, repeated_ground_truths
                 )
             ]
+
             log_data["rollouts"] = wandb.Table(
                 columns=["prompt", "response", "reward"],
                 data=[
@@ -347,17 +331,14 @@ def grpo_experiments(
             )
 
         if step % training_hyperparameters["eval_interval"] == 0:
-            eval_start = time.monotonic()
-            group_size = training_hyperparameters["group_size"]
-            n_val = training_hyperparameters["n_val_examples"]
             print("***** Running evaluation *****", flush=True)
-            print(f"Num examples = {n_val}", flush=True)
-            print(f"Num rollouts = {n_val * group_size}", flush=True)
+
+            eval_start = time.monotonic()
             mean_reward = 0
             mean_format_reward = 0
             mean_response_length = 0
             accuracy = 0
-            pass_k = [0] * group_size
+            pass_k = [0] * training_hyperparameters["group_size"]
 
             for batch in valid_loader:
                 repeated_prompts, rollout_responses, repeated_ground_truths = (
@@ -411,10 +392,13 @@ def grpo_experiments(
                 "eval_response_length_chars": round(mean_response_length, 1),
                 "eval_accuracy": round(accuracy, 3),
                 "eval_pass@1": round(pass_k["eval/pass@1"], 3),
-                f"eval_pass@{group_size}": round(pass_k[f"eval/pass@{group_size}"], 3),
+                f"eval_pass@{training_hyperparameters['group_size']}": round(
+                    pass_k[f"eval/pass@{training_hyperparameters['group_size']}"], 3
+                ),
                 "eval_runtime": round(time.monotonic() - eval_start, 1),
             }
             print(f"step {step} eval: {eval_metrics}", flush=True)
+
             log_data.update(
                 {
                     "eval/mean_reward": mean_reward,
@@ -435,6 +419,7 @@ def _run_grpo_standard_on_policy_experiments(
     seed: int = 0,
     training_hyperparameters_overrides: dict[str, Any] | None = None,
     experiment_name: str = "standard-on-policy",
+    group_name: str | None = None,
 ):
     model_id = "models/OLMo-2-0425-1B"
 
@@ -483,7 +468,7 @@ def _run_grpo_standard_on_policy_experiments(
 
 
 def _run_smoke(seed: int = 0) -> None:
-    print(f"***** Running smoke test (seed={seed}) *****", flush=True)
+    print("***** Running smoke test *****", flush=True)
 
     _run_grpo_standard_on_policy_experiments(
         seed,
@@ -499,19 +484,8 @@ def _run_smoke(seed: int = 0) -> None:
 
 
 def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
-    if steps <= 0:
-        raise ValueError("steps must be positive")
-
-    eval_interval = max(1, steps // 5)
-
     print(
-        f"***** Running correctness check: {steps} steps, "
-        f"eval every {eval_interval} *****",
-        flush=True,
-    )
-    print(
-        "Compare the `step N eval` lines: the last eval_reward should be higher "
-        "than the first. Rollouts are logged to W&B at the same interval.",
+        "***** Running correctness check *****",
         flush=True,
     )
 
@@ -519,20 +493,21 @@ def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
         seed,
         training_hyperparameters_overrides={
             "num_rollout_steps": steps,
-            "eval_interval": eval_interval,
-            "log_rollouts_interval": eval_interval,
+            "eval_interval": max(1, steps // 5),
+            "log_rollouts_interval": max(1, steps // 5),
         },
-        experiment_name=f"standard-on-policy-correctness-seed-{seed}",
+        experiment_name="standard-on-policy-correctness",
     )
 
 
-def _run_full():
+def _run_4_seed_experiments():
     print("***** Running full run (4 seeds x 200 steps) *****", flush=True)
 
     for seed in range(4):
         _run_grpo_standard_on_policy_experiments(
             seed,
             experiment_name=f"standard-on-policy-seed-{seed}",
+            group_name="4 seed experiments",
         )
 
 
@@ -541,6 +516,15 @@ def _run_learning_rate_ablation():
         "***** Running learning rate experiments *****",
         flush=True,
     )
+
+    for learning_rate in [3e-6, 1e-5, 3e-5, 1e-4]:
+        _run_grpo_standard_on_policy_experiments(
+            training_hyperparameters_overrides={
+                "learning_rate": learning_rate,
+            },
+            experiment_name=f"standard-on-policy-learning-rate-{learning_rate:.0e}",
+            group_name="Learning rate ablation  experiments",
+        )
 
 
 if __name__ == "__main__":

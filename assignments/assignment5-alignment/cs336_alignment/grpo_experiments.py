@@ -16,6 +16,19 @@ from cs336_alignment.train_utils import grpo_train_step
 from cs336_alignment.vllm_utils import VLLMServer
 
 
+def _log(message: str) -> None:
+    """Print a timestamped, flushed log line."""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def _fmt_seconds(seconds: float) -> str:
+    """Format a duration as 'XmYYs' or 'XhYYm'."""
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m{secs:02d}s"
+
+
 class _RecordDataset(Dataset[dict[str, Any]]):
     def __init__(self, records: list[dict[str, Any]]):
         self.records = records
@@ -196,25 +209,26 @@ def grpo_experiments(
             "train_batch_size must be greater than or equal to group_size and divisible by group_size."
         )
 
-    print(
-        f"config | run={experiment_name} | model={model_id} | "
-        f"policy_device={policy_device} | vllm_gpu={vllm_gpu} | "
-        f"vllm_port={vllm_port} | seed={sampling_hyperparameters['seed']} | "
-        f"steps={training_hyperparameters['num_rollout_steps']} | "
-        f"rollout={training_hyperparameters['rollout_batch_size']} | "
-        f"group={training_hyperparameters['group_size']} | "
-        f"accum={training_hyperparameters['gradient_accumulation_steps']} | "
-        f"n_train={training_hyperparameters['n_train_examples']} | "
-        f"n_val={training_hyperparameters['n_val_examples']} | "
-        f"lr={training_hyperparameters['learning_rate']}",
-        flush=True,
+    _log("=" * 72)
+    _log(f"{'run':<8} {experiment_name}")
+    _log(f"{'model':<8} {model_id}")
+    _log(f"{'devices':<8} policy={policy_device}  vllm=gpu{vllm_gpu}:{vllm_port}")
+    _log(
+        f"{'schedule':<8} steps={training_hyperparameters['num_rollout_steps']}  "
+        f"rollout={training_hyperparameters['rollout_batch_size']}  "
+        f"group={training_hyperparameters['group_size']}  "
+        f"accum={training_hyperparameters['gradient_accumulation_steps']}"
     )
+    _log(
+        f"{'data':<8} n_train={training_hyperparameters['n_train_examples']}  "
+        f"n_val={training_hyperparameters['n_val_examples']}  "
+        f"seed={sampling_hyperparameters['seed']}  "
+        f"lr={training_hyperparameters['learning_rate']}"
+    )
+    _log("-" * 72)
     model, tokenizer = get_model_and_tokenizer(model_id, policy_device)
     policy_param = next(model.parameters())
-    print(
-        f"policy loaded | dtype={policy_param.dtype} | device={policy_param.device}",
-        flush=True,
-    )
+    _log(f"{'policy':<8} {policy_param.dtype} on {policy_param.device}")
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_hyperparameters["learning_rate"],
@@ -259,14 +273,15 @@ def grpo_experiments(
         },
     )
 
-    print(f"starting vLLM on gpu {vllm_gpu}, port {vllm_port} ...", flush=True)
+    _log(f"{'vLLM':<8} starting on gpu {vllm_gpu}, port {vllm_port} ...")
     server.start()
-    print("vLLM ready", flush=True)
-    print("initializing weight sync ...", flush=True)
+    _log(f"{'vLLM':<8} ready")
+    _log(f"{'sync':<8} initializing ...")
     server.init_weight_sync(policy_device)
-    print("weight sync ready", flush=True)
+    _log(f"{'sync':<8} ready")
 
     train_iter = iter(train_loader)
+    loop_start = time.monotonic()
     for step in range(1, training_hyperparameters["num_rollout_steps"] + 1):
         step_start = time.monotonic()
         try:
@@ -315,14 +330,16 @@ def grpo_experiments(
         } | {"train/loss": loss_value}
 
         server.sync_policy_weights(model)
-        print(
-            f"step {step}/{training_hyperparameters['num_rollout_steps']} | "
+        total_steps = training_hyperparameters["num_rollout_steps"]
+        elapsed = time.monotonic() - loop_start
+        eta = elapsed / step * (total_steps - step) if step < total_steps else 0.0
+        _log(
+            f"{'step':<8} {step:>3}/{total_steps:<3} ({100 * step / total_steps:5.1f}%) | "
             f"loss {loss_value:.4f} | grad {float(train_log['gradient_norm']):.3f} | "
-            f"entropy {float(train_log['token_entropy']):.3f} | "
-            f"reward {train_log['mean_reward']:.3f} | "
+            f"ent {float(train_log['token_entropy']):.3f} | "
+            f"rew {train_log['mean_reward']:.3f} | "
             f"fmt {train_log['mean_format_reward']:.3f} | "
-            f"{time.monotonic() - step_start:.1f}s",
-            flush=True,
+            f"{time.monotonic() - step_start:.1f}s | eta {_fmt_seconds(eta)}"
         )
 
         if step % training_hyperparameters["log_rollouts_interval"] == 0:
@@ -344,12 +361,17 @@ def grpo_experiments(
 
         if step % training_hyperparameters["eval_interval"] == 0:
             eval_start = time.monotonic()
-            print(f"eval start (step {step})", flush=True)
+            group_size = training_hyperparameters["group_size"]
+            n_val = training_hyperparameters["n_val_examples"]
+            _log(
+                f"{'eval':<8} {step:>3} | start "
+                f"({n_val} prompts x {group_size} = {n_val * group_size} rollouts)"
+            )
             mean_reward = 0
             mean_format_reward = 0
             mean_response_length = 0
             accuracy = 0
-            pass_k = [0] * training_hyperparameters["group_size"]
+            pass_k = [0] * group_size
 
             for batch in valid_loader:
                 repeated_prompts, rollout_responses, repeated_ground_truths = (
@@ -397,14 +419,13 @@ def grpo_experiments(
                 for i, x in enumerate(pass_k)
             }
 
-            group_size = training_hyperparameters["group_size"]
-            print(
-                f"eval done in {time.monotonic() - eval_start:.1f}s | "
-                f"reward {mean_reward:.3f} | fmt {mean_format_reward:.3f} | "
-                f"len {mean_response_length:.1f} (chars) | acc {accuracy:.3f} | "
-                f"pass@1 {pass_k['eval/pass@1']:.3f} | "
-                f"pass@{group_size} {pass_k[f'eval/pass@{group_size}']:.3f}",
-                flush=True,
+            _log(
+                f"{'eval':<8} {step:>3} | "
+                f"rew {mean_reward:.3f} | fmt {mean_format_reward:.3f} | "
+                f"len(chars) {mean_response_length:.1f} | acc {accuracy:.3f} | "
+                f"p@1 {pass_k['eval/pass@1']:.3f} | "
+                f"p@{group_size} {pass_k[f'eval/pass@{group_size}']:.3f} | "
+                f"{time.monotonic() - eval_start:.1f}s"
             )
             log_data.update(
                 {
@@ -460,8 +481,6 @@ def _run_grpo_standard_on_policy_experiments(
         **(training_hyperparameters_overrides or {}),
     }
 
-    print(f"=== running {experiment_name} | seed {seed} ===", flush=True)
-
     grpo_experiments(
         model_id,
         prompt,
@@ -476,7 +495,9 @@ def _run_grpo_standard_on_policy_experiments(
 
 
 def _run_smoke(seed: int = 0) -> None:
-    print(f"=== smoke test | seed {seed} ===", flush=True)
+    _log("=" * 72)
+    _log(f"smoke test | seed {seed}")
+    _log("=" * 72)
     _run_grpo_standard_on_policy_experiments(
         seed,
         training_hyperparameters_overrides={
@@ -491,9 +512,12 @@ def _run_smoke(seed: int = 0) -> None:
 
 
 def _run_full():
-    print("=== full run: 4 seeds x 200 steps ===", flush=True)
+    _log("=" * 72)
+    _log("full run | 4 seeds x 200 steps")
+    _log("=" * 72)
     for seed in range(4):
-        print(f"=== seed {seed} ===", flush=True)
+        _log("-" * 72)
+        _log(f"{'seed':<8} {seed}")
         _run_grpo_standard_on_policy_experiments(
             seed,
             experiment_name=f"standard-on-policy-seed-{seed}",

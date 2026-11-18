@@ -44,6 +44,8 @@ def _run_grpo_standard_on_policy_experiments(
         **(training_hyperparameters_overrides or {}),
     }
 
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
     train_grpo(
         model_id,
         prompt,
@@ -53,7 +55,7 @@ def _run_grpo_standard_on_policy_experiments(
         sampling_hyperparameters,
         training_hyperparameters,
         vllm_gpu=1,
-        experiment_name=experiment_name,
+        experiment_name=f"{experiment_name}-{timestamp}",
         group_name=group_name,
     )
 

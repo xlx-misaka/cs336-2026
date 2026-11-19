@@ -72,56 +72,66 @@ def grpo_train_step(
     )
 
     none_zero_mask = advantages != 0
-    input_ids = input_ids[none_zero_mask]
-    labels = labels[none_zero_mask]
-    advantages = advantages[none_zero_mask]
-    response_mask = response_mask[none_zero_mask]
+    masked_input_ids = input_ids[none_zero_mask]
+    masked_labels = labels[none_zero_mask]
+    masked_advantages = advantages[none_zero_mask]
+    masked_response_mask = response_mask[none_zero_mask]
 
-    microbatch_size = (len(input_ids) - 1) // gradient_accumulation_steps + 1
+    microbatch_size = (len(masked_input_ids) - 1) // gradient_accumulation_steps + 1
     loss = torch.zeros((), device=device)
-    token_entropy = torch.zeros((), device=device)
+    entropy_sum = torch.zeros((), device=device)
 
-    for i in range(0, len(input_ids), microbatch_size):
-        inputs_microbatch = input_ids[i : min(len(input_ids), i + microbatch_size)]
-        labels_microbatch = labels[i : min(len(input_ids), i + microbatch_size)]
+    if microbatch_size == 0:
+        return (
+            loss,
+            {
+                **raw_rewards_metadata,
+                "gradient_norm": torch.zeros((), device=device),
+            },
+        )
+
+    for i in range(0, len(masked_input_ids), microbatch_size):
+        microbatch = slice(i, i + microbatch_size)
+        masked_inputs_microbatch = masked_input_ids[microbatch]
+        masked_labels_microbatch = masked_labels[microbatch]
+        response_mask_microbatch = masked_response_mask[microbatch]
 
         log_probs, token_entropy_microbatch = get_response_log_probs(
             model,
-            inputs_microbatch,
-            labels_microbatch,
+            masked_inputs_microbatch,
+            masked_labels_microbatch,
             return_token_entropy=True,
         ).values()
 
         per_token_policy_gradient_loss, _ = compute_policy_gradient_loss(
-            advantages[i : min(len(input_ids), i + microbatch_size)],
+            masked_advantages[microbatch],
             log_probs,
             importance_reweighting_method,
             old_log_probs,
             cliprange,
-            response_mask[i : min(len(input_ids), i + microbatch_size)],
+            response_mask_microbatch,
         )
 
         loss_microbatch = aggregate_loss_across_microbatch(
             per_token_policy_gradient_loss,
-            response_mask[i : min(len(input_ids), i + microbatch_size)],
+            response_mask_microbatch,
             loss_normalization,
             normalization_constant,
         )
         if loss_normalization == "sequence":
             loss_microbatch = (
-                loss_microbatch * (len(inputs_microbatch)) / len(input_ids)
+                loss_microbatch * len(masked_inputs_microbatch) / len(input_ids)
             )
         loss_microbatch.backward()
         loss += loss_microbatch.detach()
 
-        token_entropy_microbatch = token_entropy_microbatch.detach().where(
-            response_mask[i : min(len(input_ids), i + microbatch_size)],
-            0.0,
+        token_counts = response_mask_microbatch.sum(dim=-1)
+        sequence_entropy_sums = (
+            token_entropy_microbatch.detach()
+            .masked_fill(~response_mask_microbatch, 0.0)
+            .sum(dim=-1)
         )
-        token_entropy_microbatch = token_entropy_microbatch.sum(-1) / response_mask[
-            i : min(len(input_ids), i + microbatch_size)
-        ].sum(-1)
-        token_entropy += token_entropy_microbatch.sum(-1) / len(input_ids)
+        entropy_sum += (sequence_entropy_sums / token_counts.clamp_min(1)).sum()
 
     if max_grad_norm is not None:
         gradient_norm = torch.nn.utils.clip_grad_norm_(
@@ -135,14 +145,15 @@ def grpo_train_step(
     optimizer.step()
     optimizer.zero_grad()
 
-    return (
-        loss,
-        {
-            **raw_rewards_metadata,
-            "token_entropy": token_entropy,
-            "gradient_norm": gradient_norm,
-        },
-    )
+    train_log: dict[str, torch.Tensor | float] = {
+        **raw_rewards_metadata,
+        "gradient_norm": gradient_norm,
+    }
+    entropy_count = int(masked_response_mask.any(dim=-1).sum().item())
+    if entropy_count > 0:
+        train_log["token_entropy"] = entropy_sum / entropy_count
+
+    return loss, train_log
 
 
 class _RecordDataset(Dataset[dict[str, Any]]):
@@ -661,11 +672,12 @@ def train_grpo(
         metrics = {
             "loss": round(loss.item(), 4),
             "grad_norm": round(float(train_log["gradient_norm"]), 3),
-            "entropy": round(float(train_log["token_entropy"]), 3),
             "reward": round(float(train_log["mean_reward"]), 3),
             "format_reward": round(float(train_log["mean_format_reward"]), 3),
             "learning_rate": training_hyperparameters["learning_rate"],
         }
+        if "token_entropy" in train_log:
+            metrics["entropy"] = round(float(train_log["token_entropy"]), 3)
         print(
             f"step {step}/{training_hyperparameters['num_rollout_steps']}: {metrics}",
             flush=True,

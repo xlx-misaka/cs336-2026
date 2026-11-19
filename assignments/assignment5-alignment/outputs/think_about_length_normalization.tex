@@ -1,0 +1,167 @@
+\documentclass[UTF8,fontset=none,11pt,a4paper]{ctexart}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage[most]{tcolorbox}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage[table]{xcolor}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fontspec}
+\setCJKmainfont{Noto Serif CJK SC}[
+  BoldFont={Noto Serif CJK SC Bold},
+  ItalicFont={Noto Serif CJK SC}
+]
+\setCJKsansfont{Noto Sans CJK SC}[
+  BoldFont={Noto Sans CJK SC Bold}
+]
+
+\definecolor{deepgreen}{HTML}{1B5E20}
+\definecolor{lightgreen}{HTML}{E8F5E9}
+
+\pagestyle{plain}
+\hyphenation{normalization}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.35em}
+\setlist[itemize]{leftmargin=*, itemsep=1pt, topsep=2pt, parsep=0pt}
+
+\newtcolorbox{answerbox}{
+  colback=lightgreen,
+  colframe=deepgreen,
+  boxrule=0.6pt,
+  arc=1mm,
+  left=4mm,
+  right=4mm,
+  top=2.5mm,
+  bottom=2.5mm
+}
+
+\begin{document}
+
+\begin{tcolorbox}[
+  colback=white,
+  colframe=deepgreen,
+  boxrule=0.8pt,
+  arc=1mm,
+  left=4mm,
+  right=4mm,
+  top=3mm,
+  bottom=3mm
+]
+\textcolor{deepgreen}{\textbf{Problem (think\_about\_length\_normalization):
+Think about length normalization (1 point)}}
+\par\medskip
+Before running any experiments, think about the difference between normalizing
+each sequence by sequence length, versus normalizing all sequences by the same
+constant. What are the pros and cons of each approach? Are there specific
+settings or examples where one approach seems better?
+\par\smallskip
+\textbf{Deliverable:} A few sentences of discussion.
+\end{tcolorbox}
+
+{\large\bfseries\color{deepgreen} 两种估计器}\par\smallskip
+
+设 \(B\) 为 prompt 数，\(G\) 为组大小，\(y_{ij}\) 是第 \(i\) 个问题的第 \(j\) 个
+回答，\(L_{ij}=|y_{ij}|\) 是它的长度，\(A_{ij}\) 是组归一化后的 advantage。
+忽略基线选择和 advantage 归一化（它们与本题正交），batch 策略梯度为
+\begin{equation*}
+\nabla_\theta J(\theta)
+=
+\frac{1}{BG}\sum_{i=1}^{B}\sum_{j=1}^{G}
+A_{ij}\sum_{t=1}^{L_{ij}}
+\nabla_\theta \log \pi_\theta
+\bigl(y_{ij,t}\mid x_i,y_{ij,<t}\bigr).
+\end{equation*}
+两种归一化只改变每个 token 的权重：
+\begin{equation}
+\tag{28}
+\hat g_{\mathrm{seq}}
+=
+\frac{1}{BG}\sum_{i=1}^{B}\sum_{j=1}^{G}
+\frac{1}{L_{ij}}\sum_{t=1}^{L_{ij}}
+A_{ij}\,\nabla_\theta \log \pi_\theta
+\bigl(y_{ij,t}\mid x_i,y_{ij,<t}\bigr),
+\end{equation}
+\begin{equation}
+\tag{33}
+\hat g_{\mathrm{const}}
+=
+\frac{1}{Z}\sum_{i=1}^{B}\sum_{j=1}^{G}\sum_{t=1}^{L_{ij}}
+A_{ij}\,\nabla_\theta \log \pi_\theta
+\bigl(y_{ij,t}\mid x_i,y_{ij,<t}\bigr),
+\qquad Z=BGL.
+\end{equation}
+
+常数归一化给每个 token 相同的权重 \(1/Z\)；序列长度归一化给长度为 \(L_{ij}\) 的
+序列中的 token 权重 \(1/(BG\,L_{ij})\)，权重取决于该序列自己的长度。如果所有
+序列长度相同，两种估计器只差一个全局标量，学习率吸收后完全等价；真正的区别只在
+长度变化时出现。
+
+\begin{answerbox}
+\textcolor{deepgreen}{\textbf{两种方法的对比}}
+
+\smallskip
+{\small
+\arrayrulecolor{deepgreen}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{0.2\linewidth}
+                                   >{\raggedright\arraybackslash}X
+                                   >{\raggedright\arraybackslash}X@{}}
+\toprule
+\rowcolor{lightgreen}
+ & \textbf{按序列长度归一化} & \textbf{按常数归一化} \\
+\midrule
+每个 token 的权重 & \(1/(BG\,L_{ij})\)，依赖该序列长度 & \(1/Z\)，所有 token 相同 \\
+每个序列的影响 & 相同，均为 \(1/(BG)\) & 与该序列的 token 数成正比 \\
+偏差 & 有偏：\(1/L_{ij}\) 不在真实梯度中 & 无偏：只差全局常数 \(BG/Z\) \\
+方差与稳定性 & 较低；长序列不会主导更新 & 较高；长序列可能主导更新 \\
+更适合 & 长度相近，或长度与 reward 无关 & 长度与正确率相关（如 GSM8K CoT） \\
+\bottomrule
+\end{tabularx}
+}
+\end{answerbox}
+
+\begin{answerbox}
+\textcolor{deepgreen}{\textbf{优缺点}}
+
+\textbf{序列长度归一化。} 优点是每个 response 等权，长度分布变化时 loss 和梯度
+尺度稳定，\mbox{长序列}不会因为 token 多而主导 batch，方差通常更低；log 出来的 loss
+也可以跨 batch 比较。缺点是 \(1/L_{ij}\) 不在真实策略梯度中，估计有偏，而且偏差
+不会随样本数增加而消失：长而正确的回答被强化得更少，长而错误的回答被抑制得更少，
+隐式地偏向更短的输出。per-token 有效学习率和固定 clip 阈值的行为也依赖长度；如果
+正确率与长 CoT 相关，这种偏置会抑制模型写出长推理链。
+
+\textbf{常数归一化。} 优点是与推导一致，每个 token 等权，估计器等于真实策略梯度
+乘一个全局常数 \(BG/Z\)，没有逐序列的长度偏差；长度中性，固定 \(Z=BGL\) 时归一化
+常数在 batch 间不变，学习率调参更有意义。Dr. GRPO 正是去掉长度归一化（以及 std
+归一化）来恢复估计器的正确期望。缺点是梯度大小随总 token 数增长，长回答较多的
+batch 会产生更大的更新；在重尾长度分布下，少数长序列可能主导梯度并增大方差，
+通常需要梯度裁剪和更仔细的学习率/\(Z\) 选择。
+\end{answerbox}
+
+\begin{answerbox}
+\textcolor{deepgreen}{\textbf{什么时候哪种更好？}}
+\begin{itemize}
+  \item \textbf{长度几乎相同。} 两者只差全局标量，常数归一化更简单且无偏。
+  \item \textbf{长度变化大、reward 与长度无关。} 序列归一化方差更低、优化尺度
+        更稳定；常数归一化无偏但更 noisy。
+  \item \textbf{reward 与长度相关（GSM8K 的 CoT）。} 序列归一化会偏向更短的输出，
+        可能抑制真正解决问题的长推理链；这是常数归一化（Dr. GRPO）更合适的
+        主要场景。
+  \item \textbf{重尾长输出或小 batch。} 常数归一化需要裁剪和合适的 \(Z\)；如果
+        首要目标是稳定性，序列归一化更稳；如果追求理论正确性，常数归一化是
+        正确的估计器。
+  \item \textbf{作业中的变体。} 标准 GRPO 用序列归一化；GRPO\_constant、
+        Dr. GRPO、RFT、MaxRL 用常数归一化，可以直接用实验检验长度偏置是否
+        真的影响 GSM8K。
+\end{itemize}
+\end{answerbox}
+
+\textcolor{deepgreen}{\textbf{结论。}} 序列长度归一化用“等权 + 降方差”换来了
+长度相关的偏差；常数归一化用“无偏 + 长度中性”换来了更高的方差和对长度分布的
+敏感性。对于 GSM8K 这种“更长的 CoT 往往更容易答对”的任务，长度偏置很可能有害，
+这正是 Dr. GRPO 采用常数归一化的动机；如果各回答长度相近、长度与 reward 无关，
+两者几乎等价。
+
+\end{document}

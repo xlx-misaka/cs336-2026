@@ -24,24 +24,36 @@ def aggregate_loss_across_microbatch(
     loss_normalization: Literal["sequence", "constant"] = "sequence",
     normalization_constant: int | None = None,
 ) -> torch.Tensor:
+    per_sequence_policy_gradient_loss = per_token_policy_gradient_loss.where(
+        mask == True,
+        torch.tensor(
+            0.0,
+            device=per_token_policy_gradient_loss.device,
+            dtype=per_token_policy_gradient_loss.dtype,
+        ),
+    ).sum(dim=-1)
+
     if loss_normalization == "sequence":
         if not mask.any(dim=-1).all(dim=-1):
             raise ValueError("Mask must have at least one token per sequence.")
 
-        per_sequence_policy_gradient_loss = per_token_policy_gradient_loss.where(
-            mask == True,
-            torch.tensor(
-                0.0,
-                device=per_token_policy_gradient_loss.device,
-                dtype=per_token_policy_gradient_loss.dtype,
-            ),
-        ).sum(dim=-1) / mask.sum(dim=-1)
-    else:
-        raise NotImplementedError
+        per_sequence_policy_gradient_loss = (
+            per_sequence_policy_gradient_loss / mask.sum(dim=-1)
+        )
 
-    total_policy_gradient_loss = (
-        per_sequence_policy_gradient_loss.sum(dim=-1)
-        / per_sequence_policy_gradient_loss.shape[-1]
-    )
+        total_policy_gradient_loss = (
+            per_sequence_policy_gradient_loss.sum(dim=-1)
+            / per_sequence_policy_gradient_loss.shape[-1]
+        )
+
+    else:
+        if normalization_constant is None:
+            raise ValueError(
+                "Normalization constant must be provided when using 'constant' normalization."
+            )
+
+        total_policy_gradient_loss = (
+            per_sequence_policy_gradient_loss.sum(dim=-1) / normalization_constant
+        )
 
     return total_policy_gradient_loss

@@ -63,7 +63,7 @@ def grpo_train_step(
     )
     rewards = rewards.to(device=device)
 
-    group_normalized_rewards, _ = compute_group_normalized_rewards(
+    advantages, _ = compute_group_normalized_rewards(
         rewards,
         group_size,
         baseline,
@@ -85,7 +85,7 @@ def grpo_train_step(
             return_token_entropy=True,
         ).values()
         per_token_policy_gradient_loss, _ = compute_policy_gradient_loss(
-            group_normalized_rewards[i : min(len(input_ids), i + microbatch_size)],
+            advantages[i : min(len(input_ids), i + microbatch_size)],
             log_probs,
             importance_reweighting_method,
             old_log_probs,

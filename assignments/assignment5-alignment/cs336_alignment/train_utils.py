@@ -71,6 +71,12 @@ def grpo_train_step(
         advantage_normalizer,
     )
 
+    none_zero_mask = advantages != 0
+    input_ids = input_ids[none_zero_mask]
+    labels = labels[none_zero_mask]
+    advantages = advantages[none_zero_mask]
+    response_mask = response_mask[none_zero_mask]
+
     microbatch_size = (len(input_ids) - 1) // gradient_accumulation_steps + 1
     loss = torch.zeros((), device=device)
     token_entropy = torch.zeros((), device=device)
@@ -78,12 +84,14 @@ def grpo_train_step(
     for i in range(0, len(input_ids), microbatch_size):
         inputs_microbatch = input_ids[i : min(len(input_ids), i + microbatch_size)]
         labels_microbatch = labels[i : min(len(input_ids), i + microbatch_size)]
+
         log_probs, token_entropy_microbatch = get_response_log_probs(
             model,
             inputs_microbatch,
             labels_microbatch,
             return_token_entropy=True,
         ).values()
+
         per_token_policy_gradient_loss, _ = compute_policy_gradient_loss(
             advantages[i : min(len(input_ids), i + microbatch_size)],
             log_probs,
@@ -92,17 +100,17 @@ def grpo_train_step(
             cliprange,
             response_mask[i : min(len(input_ids), i + microbatch_size)],
         )
-        loss_microbatch = (
-            aggregate_loss_across_microbatch(
-                per_token_policy_gradient_loss,
-                response_mask[i : min(len(input_ids), i + microbatch_size)],
-                loss_normalization,
-                normalization_constant,
-            )
-            * (len(inputs_microbatch))
-            / len(input_ids)
-        )
 
+        loss_microbatch = aggregate_loss_across_microbatch(
+            per_token_policy_gradient_loss,
+            response_mask[i : min(len(input_ids), i + microbatch_size)],
+            loss_normalization,
+            normalization_constant,
+        )
+        if loss_normalization == "sequence":
+            loss_microbatch = (
+                loss_microbatch * (len(inputs_microbatch)) / len(input_ids)
+            )
         loss_microbatch.backward()
         loss += loss_microbatch.detach()
 

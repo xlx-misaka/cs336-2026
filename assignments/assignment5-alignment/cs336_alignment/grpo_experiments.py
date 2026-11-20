@@ -1,19 +1,20 @@
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from cs336_alignment.drgrpo_grader import question_only_reward_fn, r1_zero_reward_fn
 from cs336_alignment.train_utils import train_grpo
 
 
-def _run_grpo_standard_on_policy_experiments(
+def _run_grpo_on_policy_experiments(
     seed: int = 0,
     prompt_path: str = "cs336_alignment/prompts/r1_zero.prompt",
     reward_fn: Callable[[str, str], dict[str, float]] = r1_zero_reward_fn,
     training_hyperparameters_overrides: dict[str, Any] | None = None,
     experiment_name: str = "standard-on-policy",
     group_name: str | None = None,
+    variant: Literal["standard", "constant", "Dr", "RFT", "MaxRL"] = "standard",
 ):
     model_id = "models/OLMo-2-0425-1B"
 
@@ -52,6 +53,25 @@ def _run_grpo_standard_on_policy_experiments(
         **(training_hyperparameters_overrides or {}),
     }
 
+    baseline = "mean"
+    advantage_normalizer = "std"
+    loss_normalization = "sequence"
+    normalization_constant = None
+
+    if variant != "standard":
+        loss_normalization = "constant"
+        normalization_constant = (
+            training_hyperparameters["train_batch_size"]
+            * sampling_hyperparameters["max_tokens"]
+        )
+    if variant == "Dr":
+        advantage_normalizer = "none"
+    if variant == "RFT":
+        advantage_normalizer = "none"
+        baseline = "none"
+    if variant == "MaxRL":
+        advantage_normalizer = "mean"
+
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     train_grpo(
@@ -66,13 +86,17 @@ def _run_grpo_standard_on_policy_experiments(
         experiment_name=f"{experiment_name}-{timestamp}",
         group_name=group_name,
         prompt_name=Path(prompt_path).stem,
+        baseline=baseline,
+        advantage_normalizer=advantage_normalizer,
+        loss_normalization=loss_normalization,
+        normalization_constant=normalization_constant,
     )
 
 
 def _run_smoke(seed: int = 0) -> None:
     print("***** Running smoke test *****", flush=True)
 
-    _run_grpo_standard_on_policy_experiments(
+    _run_grpo_on_policy_experiments(
         seed=seed,
         training_hyperparameters_overrides={
             "num_rollout_steps": 2,
@@ -91,7 +115,7 @@ def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
         flush=True,
     )
 
-    _run_grpo_standard_on_policy_experiments(
+    _run_grpo_on_policy_experiments(
         seed=seed,
         training_hyperparameters_overrides={
             "num_rollout_steps": steps,
@@ -105,15 +129,17 @@ def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
 def _run_4_seed_experiments(
     prompt_path: str = "cs336_alignment/prompts/r1_zero.prompt",
     reward_fn: Callable[[str, str], dict[str, float]] = r1_zero_reward_fn,
+    variant: Literal["standard", "constant", "Dr", "RFT", "MaxRL"] = "standard",
 ):
     print("***** Running 4 seed experiments *****", flush=True)
 
     for seed in range(4):
-        _run_grpo_standard_on_policy_experiments(
+        _run_grpo_on_policy_experiments(
             seed=seed,
             prompt_path=prompt_path,
             reward_fn=reward_fn,
-            experiment_name=f"standard-on-policy-{Path(prompt_path).stem}-seed-{seed}",
+            variant=variant,
+            experiment_name=f"{variant}-on-policy-{Path(prompt_path).stem}-seed-{seed}",
             group_name="4 seed experiments",
         )
 
@@ -125,7 +151,7 @@ def _run_learning_rate_ablation():
     )
 
     for learning_rate in [3e-6, 1e-5, 3e-5, 1e-4]:
-        _run_grpo_standard_on_policy_experiments(
+        _run_grpo_on_policy_experiments(
             training_hyperparameters_overrides={
                 "learning_rate": learning_rate,
             },
@@ -155,6 +181,25 @@ def _run_prompt_ablation():
         )
 
 
+def _run_variant_ablation():
+    print(
+        "***** Running variants ablation experiments *****",
+        flush=True,
+    )
+
+    variants: list[Literal["constant", "Dr", "RFT", "MaxRL"]] = [
+        "constant",
+        "Dr",
+        "RFT",
+        "MaxRL",
+    ]
+
+    for variant in variants:
+        _run_4_seed_experiments(
+            variant=variant,
+        )
+
+
 if __name__ == "__main__":
     _run_smoke()
 
@@ -165,3 +210,5 @@ if __name__ == "__main__":
     # _run_learning_rate_ablation()
 
     # _run_prompt_ablation()
+
+    # _run_variant_ablation()

@@ -70,7 +70,7 @@ def _run_grpo_standard_on_policy_experiments(
 
 
 def _run_smoke(seed: int = 0) -> None:
-    print("[RUN  ] Smoke test", flush=True)
+    print("***** Running smoke test *****", flush=True)
 
     _run_grpo_standard_on_policy_experiments(
         seed=seed,
@@ -103,7 +103,6 @@ def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
 
 
 def _run_4_seed_experiments(
-    prompt_name: str = "r1_zero",
     prompt_path: str = "cs336_alignment/prompts/r1_zero.prompt",
     reward_fn: Callable[[str, str], dict[str, float]] = r1_zero_reward_fn,
 ):
@@ -114,7 +113,7 @@ def _run_4_seed_experiments(
             seed=seed,
             prompt_path=prompt_path,
             reward_fn=reward_fn,
-            experiment_name=f"standard-on-policy-{prompt_name}-seed-{seed}",
+            experiment_name=f"standard-on-policy-{Path(prompt_path).stem}-seed-{seed}",
             group_name="4 seed experiments",
         )
 
@@ -140,20 +139,17 @@ def _run_prompt_ablation():
         "***** Running prompt ablation experiments *****",
         flush=True,
     )
-    for prompt_name, prompt_path, reward_fn in [
+    for prompt_path, reward_fn in [
         (
-            "question_only",
             "cs336_alignment/prompts/question_only.prompt",
             question_only_reward_fn,
         ),
         (
-            "r1_zero_three_shot",
             "cs336_alignment/prompts/r1_zero_three_shot_gsm8k.prompt",
             r1_zero_reward_fn,
         ),
     ]:
         _run_4_seed_experiments(
-            prompt_name=prompt_name,
             prompt_path=prompt_path,
             reward_fn=reward_fn,
         )

@@ -4,8 +4,10 @@ import random
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
+from http.client import IncompleteRead
 from pathlib import Path
 from typing import Any, Literal
+from urllib.error import HTTPError, URLError
 
 import torch
 import wandb
@@ -197,6 +199,10 @@ def _get_data_loader(
         return data_loader
 
 
+class _RolloutGenerationError(RuntimeError):
+    """The rollout request did not produce a complete batch after retries."""
+
+
 def _get_rollout_params(
     server: VLLMServer,
     batch: dict,
@@ -205,23 +211,50 @@ def _get_rollout_params(
     prompt: str,
 ):
     prompts = [prompt.format(question=question) for question in batch["question"]]
-    completions = server.generate_completions(
-        prompts,
-        {
-            **sampling_hyperparameters,
-            "n": training_hyperparameters["group_size"],
-        },
-    )
-    repeated_prompts = [
-        prompt
-        for prompt in prompts
-        for _ in range(training_hyperparameters["group_size"])
-    ]
+    group_size = training_hyperparameters["group_size"]
+    sampling_params = {**sampling_hyperparameters, "n": group_size}
+    expected_count = len(prompts) * group_size
+    max_attempts = 3
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
+
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            completions = server.generate_completions(prompts, sampling_params)
+            if len(completions) != expected_count:
+                raise _RolloutGenerationError(
+                    f"Expected {expected_count} completions, got {len(completions)}"
+                )
+        except (
+            TimeoutError,
+            ConnectionError,
+            URLError,
+            IncompleteRead,
+            json.JSONDecodeError,
+            _RolloutGenerationError,
+        ) as error:
+            if isinstance(error, HTTPError) and error.code not in retryable_statuses:
+                raise
+            if attempt == max_attempts:
+                raise _RolloutGenerationError(
+                    f"Generation failed after {max_attempts} attempts: {error}"
+                ) from error
+            print(
+                f"Generation attempt {attempt}/{max_attempts} failed: {error}. "
+                f"Retrying in {attempt}s.",
+                flush=True,
+            )
+            time.sleep(attempt)
+        else:
+            break
+
+    repeated_prompts = [prompt for prompt in prompts for _ in range(group_size)]
     rollout_responses = [completion.text for completion in completions]
     repeated_ground_truths = [
         answer.rsplit("####", 1)[-1].strip()
         for answer in batch["answer"]
-        for _ in range(training_hyperparameters["group_size"])
+        for _ in range(group_size)
     ]
     return repeated_prompts, rollout_responses, repeated_ground_truths
 
@@ -548,6 +581,8 @@ def train_grpo(
         training_hyperparameters 以及算法参数；policy_device、vllm_gpu、
         vllm_port、old_log_probs 不会写入。
         batch size 按回答数计：256 条回答、group_size 为 8，对应 32 个问题。
+        生成请求遇到临时故障时最多尝试三次。训练生成仍失败时退出，
+        验证生成仍失败时记录 eval/failed，并跳过该轮验证分数。
     """
     _check_hyperparameters(sampling_hyperparameters, training_hyperparameters)
 
@@ -718,23 +753,27 @@ def train_grpo(
                 mean_format_reward = 0
                 mean_response_length = 0
                 accuracy = 0
-                pass_k = [0] * training_hyperparameters["group_size"]
+                group_size = training_hyperparameters["group_size"]
+                pass_k = [0] * group_size
 
                 for batch in valid_loader:
-                    repeated_prompts, rollout_responses, repeated_ground_truths = (
-                        _get_rollout_params(
-                            server,
-                            batch,
-                            training_hyperparameters,
-                            sampling_hyperparameters,
-                            prompt,
+                    try:
+                        _, rollout_responses, repeated_ground_truths = (
+                            _get_rollout_params(
+                                server,
+                                batch,
+                                training_hyperparameters,
+                                sampling_hyperparameters,
+                                prompt,
+                            )
                         )
-                    )
-                    for i in range(
-                        0, len(rollout_responses), training_hyperparameters["group_size"]
-                    ):
+                    except _RolloutGenerationError as error:
+                        print(f"step {step} eval failed: {error}", flush=True)
+                        log_data["eval/failed"] = 1
+                        break
+                    for i in range(0, len(rollout_responses), group_size):
                         flag = False
-                        for j in range(training_hyperparameters["group_size"]):
+                        for j in range(group_size):
                             reward_metadata = reward_fn(
                                 rollout_responses[i + j], repeated_ground_truths[i + j]
                             )
@@ -745,48 +784,40 @@ def train_grpo(
                             mean_reward += reward_metadata["reward"]
                             mean_format_reward += reward_metadata["format_reward"]
                             mean_response_length += len(rollout_responses[i + j])
-                mean_reward /= (
-                    training_hyperparameters["n_val_examples"]
-                    * training_hyperparameters["group_size"]
-                )
-                mean_format_reward /= (
-                    training_hyperparameters["n_val_examples"]
-                    * training_hyperparameters["group_size"]
-                )
-                mean_response_length /= (
-                    training_hyperparameters["n_val_examples"]
-                    * training_hyperparameters["group_size"]
-                )
-                accuracy /= (
-                    training_hyperparameters["n_val_examples"]
-                    * training_hyperparameters["group_size"]
-                )
-                pass_k = {
-                    f"eval/pass@{i + 1}": x / training_hyperparameters["n_val_examples"]
-                    for i, x in enumerate(pass_k)
-                }
-
-                eval_metrics = {
-                    "eval_reward": round(mean_reward, 3),
-                    "eval_format_reward": round(mean_format_reward, 3),
-                    "eval_response_length_chars": round(mean_response_length, 1),
-                    "eval_accuracy": round(accuracy, 3),
-                    "eval_pass@1": round(pass_k["eval/pass@1"], 3),
-                    f"eval_pass@{training_hyperparameters['group_size']}": round(
-                        pass_k[f"eval/pass@{training_hyperparameters['group_size']}"], 3
-                    ),
-                    "eval_runtime": round(time.monotonic() - eval_start, 1),
-                }
-                print(f"step {step} eval: {eval_metrics}", flush=True)
-
-                log_data.update(
-                    {
-                        "eval/mean_reward": mean_reward,
-                        "eval/mean_format_reward": mean_format_reward,
-                        "eval/mean_response_length": mean_response_length,
-                        "eval/accuracy": accuracy,
+                else:
+                    n_val_examples = training_hyperparameters["n_val_examples"]
+                    n_responses = n_val_examples * group_size
+                    mean_reward /= n_responses
+                    mean_format_reward /= n_responses
+                    mean_response_length /= n_responses
+                    accuracy /= n_responses
+                    pass_metrics = {
+                        f"eval/pass@{i + 1}": count / n_val_examples
+                        for i, count in enumerate(pass_k)
                     }
-                    | pass_k
-                )
+
+                    eval_metrics = {
+                        "eval_reward": round(mean_reward, 3),
+                        "eval_format_reward": round(mean_format_reward, 3),
+                        "eval_response_length_chars": round(mean_response_length, 1),
+                        "eval_accuracy": round(accuracy, 3),
+                        "eval_pass@1": round(pass_metrics["eval/pass@1"], 3),
+                        f"eval_pass@{group_size}": round(
+                            pass_metrics[f"eval/pass@{group_size}"], 3
+                        ),
+                        "eval_runtime": round(time.monotonic() - eval_start, 1),
+                    }
+                    print(f"step {step} eval: {eval_metrics}", flush=True)
+
+                    log_data.update(
+                        {
+                            "eval/failed": 0,
+                            "eval/mean_reward": mean_reward,
+                            "eval/mean_format_reward": mean_format_reward,
+                            "eval/mean_response_length": mean_response_length,
+                            "eval/accuracy": accuracy,
+                        }
+                        | pass_metrics
+                    )
 
             run.log(log_data, step=step)

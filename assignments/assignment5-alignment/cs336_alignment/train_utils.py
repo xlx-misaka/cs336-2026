@@ -3,6 +3,7 @@ import math
 import random
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Literal
 
@@ -599,193 +600,193 @@ def train_grpo(
         training_hyperparameters["n_val_examples"],
         sampling_hyperparameters["seed"],
     )
-    run = wandb.init(
-        project="cs336-grpo",
-        name=f"{experiment_name}",
-        config={
-            "model_id": model_id,
-            "sampling": sampling_hyperparameters,
-            "training": training_hyperparameters,
-            "algorithm": {
-                "baseline": baseline,
-                "advantage_eps": advantage_eps,
-                "advantage_normalizer": advantage_normalizer,
-                "importance_reweighting_method": importance_reweighting_method,
-                "loss_normalization": loss_normalization,
-                "cliprange": cliprange,
-                "normalization_constant": normalization_constant,
+    with (
+        wandb.init(
+            project="cs336-grpo",
+            name=f"{experiment_name}",
+            config={
+                "model_id": model_id,
+                "sampling": sampling_hyperparameters,
+                "training": training_hyperparameters,
+                "algorithm": {
+                    "baseline": baseline,
+                    "advantage_eps": advantage_eps,
+                    "advantage_normalizer": advantage_normalizer,
+                    "importance_reweighting_method": importance_reweighting_method,
+                    "loss_normalization": loss_normalization,
+                    "cliprange": cliprange,
+                    "normalization_constant": normalization_constant,
+                },
             },
-        },
-        group=group_name,
-    )
+            group=group_name,
+        ) as run,
+        ExitStack() as cleanup,
+    ):
+        cleanup.callback(server.stop)
+        print(f"***** Starting vLLM (gpu={vllm_gpu}, port={vllm_port}) *****", flush=True)
+        server.start()
+        print("***** vLLM ready *****", flush=True)
+        print("***** Initializing weight sync *****", flush=True)
+        server.init_weight_sync(policy_device)
+        print("***** Weight sync ready *****", flush=True)
 
-    print(f"***** Starting vLLM (gpu={vllm_gpu}, port={vllm_port}) *****", flush=True)
-    server.start()
-    print("***** vLLM ready *****", flush=True)
-    print("***** Initializing weight sync *****", flush=True)
-    server.init_weight_sync(policy_device)
-    print("***** Weight sync ready *****", flush=True)
+        train_iter = iter(train_loader)
+        for step in range(1, training_hyperparameters["num_rollout_steps"] + 1):
+            try:
+                batch = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                batch = next(train_iter)
 
-    train_iter = iter(train_loader)
-    for step in range(1, training_hyperparameters["num_rollout_steps"] + 1):
-        try:
-            batch = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            batch = next(train_iter)
-
-        repeated_prompts, rollout_responses, repeated_ground_truths = (
-            _get_rollout_params(
-                server,
-                batch,
-                training_hyperparameters,
-                sampling_hyperparameters,
-                prompt,
-            )
-        )
-
-        loss, train_log = grpo_train_step(
-            model,
-            tokenizer,
-            optimizer,
-            gradient_accumulation_steps=training_hyperparameters[
-                "gradient_accumulation_steps"
-            ],
-            max_grad_norm=training_hyperparameters["max_grad_norm"],
-            reward_fn=reward_fn,
-            repeated_prompts=repeated_prompts,
-            rollout_responses=rollout_responses,
-            repeated_ground_truths=repeated_ground_truths,
-            group_size=training_hyperparameters["group_size"],
-            baseline=baseline,
-            advantage_eps=advantage_eps,
-            advantage_normalizer=advantage_normalizer,
-            importance_reweighting_method=importance_reweighting_method,
-            old_log_probs=old_log_probs,
-            cliprange=cliprange,
-            loss_normalization=loss_normalization,
-            normalization_constant=normalization_constant,
-        )
-
-        server.sync_policy_weights(model)
-
-        metrics = {
-            "loss": round(loss.item(), 4),
-            "grad_norm": round(float(train_log["gradient_norm"]), 3),
-            "reward": round(float(train_log["mean_reward"]), 3),
-            "format_reward": round(float(train_log["mean_format_reward"]), 3),
-            "learning_rate": training_hyperparameters["learning_rate"],
-        }
-        if "token_entropy" in train_log:
-            metrics["entropy"] = round(float(train_log["token_entropy"]), 3)
-        print(
-            f"step {step}/{training_hyperparameters['num_rollout_steps']}: {metrics}",
-            flush=True,
-        )
-
-        log_data: dict[str, Any] = {
-            "train/" + key: float(val) if isinstance(val, torch.Tensor) else val
-            for key, val in train_log.items()
-        } | {"train/loss": loss.item()}
-
-        if step % training_hyperparameters["log_rollouts_interval"] == 0:
-            rollout_rewards = [
-                reward_fn(response, ground_truth)["reward"]
-                for response, ground_truth in zip(
-                    rollout_responses, repeated_ground_truths
+            repeated_prompts, rollout_responses, repeated_ground_truths = (
+                _get_rollout_params(
+                    server,
+                    batch,
+                    training_hyperparameters,
+                    sampling_hyperparameters,
+                    prompt,
                 )
-            ]
+            )
 
-            log_data["rollouts"] = wandb.Table(
-                columns=["prompt", "response", "reward"],
-                data=[
-                    [prompt, response, reward]
-                    for prompt, response, reward in zip(
-                        repeated_prompts, rollout_responses, rollout_rewards
-                    )
+            loss, train_log = grpo_train_step(
+                model,
+                tokenizer,
+                optimizer,
+                gradient_accumulation_steps=training_hyperparameters[
+                    "gradient_accumulation_steps"
                 ],
+                max_grad_norm=training_hyperparameters["max_grad_norm"],
+                reward_fn=reward_fn,
+                repeated_prompts=repeated_prompts,
+                rollout_responses=rollout_responses,
+                repeated_ground_truths=repeated_ground_truths,
+                group_size=training_hyperparameters["group_size"],
+                baseline=baseline,
+                advantage_eps=advantage_eps,
+                advantage_normalizer=advantage_normalizer,
+                importance_reweighting_method=importance_reweighting_method,
+                old_log_probs=old_log_probs,
+                cliprange=cliprange,
+                loss_normalization=loss_normalization,
+                normalization_constant=normalization_constant,
             )
 
-        if step % training_hyperparameters["eval_interval"] == 0:
-            print("***** Running evaluation *****", flush=True)
+            server.sync_policy_weights(model)
 
-            eval_start = time.monotonic()
-            mean_reward = 0
-            mean_format_reward = 0
-            mean_response_length = 0
-            accuracy = 0
-            pass_k = [0] * training_hyperparameters["group_size"]
+            metrics = {
+                "loss": round(loss.item(), 4),
+                "grad_norm": round(float(train_log["gradient_norm"]), 3),
+                "reward": round(float(train_log["mean_reward"]), 3),
+                "format_reward": round(float(train_log["mean_format_reward"]), 3),
+                "learning_rate": training_hyperparameters["learning_rate"],
+            }
+            if "token_entropy" in train_log:
+                metrics["entropy"] = round(float(train_log["token_entropy"]), 3)
+            print(
+                f"step {step}/{training_hyperparameters['num_rollout_steps']}: {metrics}",
+                flush=True,
+            )
 
-            for batch in valid_loader:
-                repeated_prompts, rollout_responses, repeated_ground_truths = (
-                    _get_rollout_params(
-                        server,
-                        batch,
-                        training_hyperparameters,
-                        sampling_hyperparameters,
-                        prompt,
+            log_data: dict[str, Any] = {
+                "train/" + key: float(val) if isinstance(val, torch.Tensor) else val
+                for key, val in train_log.items()
+            } | {"train/loss": loss.item()}
+
+            if step % training_hyperparameters["log_rollouts_interval"] == 0:
+                rollout_rewards = [
+                    reward_fn(response, ground_truth)["reward"]
+                    for response, ground_truth in zip(
+                        rollout_responses, repeated_ground_truths
                     )
-                )
-                for i in range(
-                    0, len(rollout_responses), training_hyperparameters["group_size"]
-                ):
-                    flag = False
-                    for j in range(training_hyperparameters["group_size"]):
-                        reward_metadata = reward_fn(
-                            rollout_responses[i + j], repeated_ground_truths[i + j]
+                ]
+
+                log_data["rollouts"] = wandb.Table(
+                    columns=["prompt", "response", "reward"],
+                    data=[
+                        [prompt, response, reward]
+                        for prompt, response, reward in zip(
+                            repeated_prompts, rollout_responses, rollout_rewards
                         )
-                        if reward_metadata["answer_reward"] == 1:
-                            flag = True
-                            accuracy += 1
-                        pass_k[j] += flag
-                        mean_reward += reward_metadata["reward"]
-                        mean_format_reward += reward_metadata["format_reward"]
-                        mean_response_length += len(rollout_responses[i + j])
-            mean_reward /= (
-                training_hyperparameters["n_val_examples"]
-                * training_hyperparameters["group_size"]
-            )
-            mean_format_reward /= (
-                training_hyperparameters["n_val_examples"]
-                * training_hyperparameters["group_size"]
-            )
-            mean_response_length /= (
-                training_hyperparameters["n_val_examples"]
-                * training_hyperparameters["group_size"]
-            )
-            accuracy /= (
-                training_hyperparameters["n_val_examples"]
-                * training_hyperparameters["group_size"]
-            )
-            pass_k = {
-                f"eval/pass@{i + 1}": x / training_hyperparameters["n_val_examples"]
-                for i, x in enumerate(pass_k)
-            }
+                    ],
+                )
 
-            eval_metrics = {
-                "eval_reward": round(mean_reward, 3),
-                "eval_format_reward": round(mean_format_reward, 3),
-                "eval_response_length_chars": round(mean_response_length, 1),
-                "eval_accuracy": round(accuracy, 3),
-                "eval_pass@1": round(pass_k["eval/pass@1"], 3),
-                f"eval_pass@{training_hyperparameters['group_size']}": round(
-                    pass_k[f"eval/pass@{training_hyperparameters['group_size']}"], 3
-                ),
-                "eval_runtime": round(time.monotonic() - eval_start, 1),
-            }
-            print(f"step {step} eval: {eval_metrics}", flush=True)
+            if step % training_hyperparameters["eval_interval"] == 0:
+                print("***** Running evaluation *****", flush=True)
 
-            log_data.update(
-                {
-                    "eval/mean_reward": mean_reward,
-                    "eval/mean_format_reward": mean_format_reward,
-                    "eval/mean_response_length": mean_response_length,
-                    "eval/accuracy": accuracy,
+                eval_start = time.monotonic()
+                mean_reward = 0
+                mean_format_reward = 0
+                mean_response_length = 0
+                accuracy = 0
+                pass_k = [0] * training_hyperparameters["group_size"]
+
+                for batch in valid_loader:
+                    repeated_prompts, rollout_responses, repeated_ground_truths = (
+                        _get_rollout_params(
+                            server,
+                            batch,
+                            training_hyperparameters,
+                            sampling_hyperparameters,
+                            prompt,
+                        )
+                    )
+                    for i in range(
+                        0, len(rollout_responses), training_hyperparameters["group_size"]
+                    ):
+                        flag = False
+                        for j in range(training_hyperparameters["group_size"]):
+                            reward_metadata = reward_fn(
+                                rollout_responses[i + j], repeated_ground_truths[i + j]
+                            )
+                            if reward_metadata["answer_reward"] == 1:
+                                flag = True
+                                accuracy += 1
+                            pass_k[j] += flag
+                            mean_reward += reward_metadata["reward"]
+                            mean_format_reward += reward_metadata["format_reward"]
+                            mean_response_length += len(rollout_responses[i + j])
+                mean_reward /= (
+                    training_hyperparameters["n_val_examples"]
+                    * training_hyperparameters["group_size"]
+                )
+                mean_format_reward /= (
+                    training_hyperparameters["n_val_examples"]
+                    * training_hyperparameters["group_size"]
+                )
+                mean_response_length /= (
+                    training_hyperparameters["n_val_examples"]
+                    * training_hyperparameters["group_size"]
+                )
+                accuracy /= (
+                    training_hyperparameters["n_val_examples"]
+                    * training_hyperparameters["group_size"]
+                )
+                pass_k = {
+                    f"eval/pass@{i + 1}": x / training_hyperparameters["n_val_examples"]
+                    for i, x in enumerate(pass_k)
                 }
-                | pass_k
-            )
 
-        run.log(log_data, step=step)
+                eval_metrics = {
+                    "eval_reward": round(mean_reward, 3),
+                    "eval_format_reward": round(mean_format_reward, 3),
+                    "eval_response_length_chars": round(mean_response_length, 1),
+                    "eval_accuracy": round(accuracy, 3),
+                    "eval_pass@1": round(pass_k["eval/pass@1"], 3),
+                    f"eval_pass@{training_hyperparameters['group_size']}": round(
+                        pass_k[f"eval/pass@{training_hyperparameters['group_size']}"], 3
+                    ),
+                    "eval_runtime": round(time.monotonic() - eval_start, 1),
+                }
+                print(f"step {step} eval: {eval_metrics}", flush=True)
 
-    server.stop()
-    run.finish()
+                log_data.update(
+                    {
+                        "eval/mean_reward": mean_reward,
+                        "eval/mean_format_reward": mean_format_reward,
+                        "eval/mean_response_length": mean_response_length,
+                        "eval/accuracy": accuracy,
+                    }
+                    | pass_k
+                )
+
+            run.log(log_data, step=step)

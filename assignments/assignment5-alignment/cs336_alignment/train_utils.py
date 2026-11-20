@@ -512,7 +512,6 @@ def train_grpo(
     normalization_constant: int | None = None,
     experiment_name: str = "standard-on-policy",
     group_name: str | None = None,
-    *,
     prompt_name: str | None = None,
 ):
     """运行标准 on-policy GRPO 实验。
@@ -670,7 +669,9 @@ def train_grpo(
     model, tokenizer = get_model_and_tokenizer(model_id, policy_device)
     policy_param = next(model.parameters())
     policy_dtype = str(policy_param.dtype).removeprefix("torch.")
-    print(f"[INIT ] Policy loaded · {policy_dtype} on {policy_param.device}", flush=True)
+    print(
+        f"[INIT ] Policy loaded · {policy_dtype} on {policy_param.device}", flush=True
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_hyperparameters["learning_rate"],
@@ -717,7 +718,9 @@ def train_grpo(
         ExitStack() as cleanup,
     ):
         cleanup.callback(server.stop)
-        print(f"[INIT ] Starting vLLM on cuda:{vllm_gpu} (port {vllm_port})…", flush=True)
+        print(
+            f"[INIT ] Starting vLLM on cuda:{vllm_gpu} (port {vllm_port})…", flush=True
+        )
         server.start()
         print("[INIT ] Initializing weight synchronization…", flush=True)
         server.init_weight_sync(policy_device)

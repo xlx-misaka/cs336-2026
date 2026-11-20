@@ -93,7 +93,7 @@ def _run_grpo_on_policy_experiments(
     )
 
 
-def _run_smoke(seed: int = 0) -> None:
+def _run_smoke_on_policy(seed: int = 0) -> None:
     print("***** Running smoke test *****", flush=True)
 
     _run_grpo_on_policy_experiments(
@@ -109,7 +109,7 @@ def _run_smoke(seed: int = 0) -> None:
     )
 
 
-def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
+def _run_correctness_check_on_policy(seed: int = 0, steps: int = 50) -> None:
     print(
         "***** Running correctness check *****",
         flush=True,
@@ -126,7 +126,7 @@ def _run_correctness_check(seed: int = 0, steps: int = 50) -> None:
     )
 
 
-def _run_4_seed_experiments(
+def _run_4_seed_experiments_on_policy(
     prompt_path: str = "cs336_alignment/prompts/r1_zero.prompt",
     reward_fn: Callable[[str, str], dict[str, float]] = r1_zero_reward_fn,
     variant: Literal["standard", "constant", "Dr", "RFT", "MaxRL"] = "standard",
@@ -144,7 +144,7 @@ def _run_4_seed_experiments(
         )
 
 
-def _run_learning_rate_ablation():
+def _run_learning_rate_ablation_on_policy():
     print(
         "***** Running learning rate ablation experiments *****",
         flush=True,
@@ -160,7 +160,7 @@ def _run_learning_rate_ablation():
         )
 
 
-def _run_prompt_ablation():
+def _run_prompt_ablation_on_policy():
     print(
         "***** Running prompt ablation experiments *****",
         flush=True,
@@ -175,13 +175,13 @@ def _run_prompt_ablation():
             r1_zero_reward_fn,
         ),
     ]:
-        _run_4_seed_experiments(
+        _run_4_seed_experiments_on_policy(
             prompt_path=prompt_path,
             reward_fn=reward_fn,
         )
 
 
-def _run_variant_ablation():
+def _run_variant_ablation_on_policy():
     print(
         "***** Running variants ablation experiments *****",
         flush=True,
@@ -195,20 +195,20 @@ def _run_variant_ablation():
     ]
 
     for variant in variants:
-        _run_4_seed_experiments(
+        _run_4_seed_experiments_on_policy(
             variant=variant,
         )
 
 
 if __name__ == "__main__":
-    _run_smoke()
+    _run_smoke_on_policy()
 
-    # _run_correctness_check()
+    _run_correctness_check_on_policy()
 
-    # _run_4_seed_experiments()
+    _run_4_seed_experiments_on_policy()
 
-    # _run_learning_rate_ablation()
+    _run_learning_rate_ablation_on_policy()
 
-    # _run_prompt_ablation()
+    _run_prompt_ablation_on_policy()
 
-    # _run_variant_ablation()
+    _run_variant_ablation_on_policy()

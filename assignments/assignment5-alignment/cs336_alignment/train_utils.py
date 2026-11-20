@@ -621,31 +621,47 @@ def train_grpo(
         "╭─ CS336 · GRPO Training ".ljust(71, "─"),
         f"│ Run          {run_label}",
         f"│ Model        {model_id}",
-        f"│ Devices      policy {policy_device} | vLLM cuda:{vllm_gpu} "
-        f"(port {vllm_port}) | seed {sampling_hyperparameters['seed']}",
+        (
+            f"│ Devices      policy {policy_device} | vLLM cuda:{vllm_gpu} "
+            f"(port {vllm_port}) | seed {sampling_hyperparameters['seed']}"
+        ),
         "│",
-        f"│ Training     {total_steps:,} steps · "
-        f"{training_hyperparameters['n_train_examples']:,} training prompts",
-        f"│ Rollout      {prompts_per_batch:,} prompts × {group_size} answers "
-        f"= {rollout_size:,} answers per full step",
-        f"│ Microbatch   up to {max_microbatch_size:,} answers · "
-        f"{accum_steps} accumulation steps configured",
-        f"│ Optimizer    AdamW · lr {training_hyperparameters['learning_rate']:g} · "
-        f"betas {tuple(training_hyperparameters['betas'])} · "
-        f"weight decay {training_hyperparameters['weight_decay']:g}",
+        (
+            f"│ Training     {total_steps:,} steps · "
+            f"{training_hyperparameters['n_train_examples']:,} training prompts"
+        ),
+        (
+            f"│ Rollout      {prompts_per_batch:,} prompts × {group_size} answers "
+            f"= {rollout_size:,} answers per full step"
+        ),
+        (
+            f"│ Microbatch   up to {max_microbatch_size:,} answers · "
+            f"{accum_steps} accumulation steps configured"
+        ),
+        (
+            f"│ Optimizer    AdamW · lr {training_hyperparameters['learning_rate']:g} · "
+            f"betas {tuple(training_hyperparameters['betas'])} · "
+            f"weight decay {training_hyperparameters['weight_decay']:g}"
+        ),
         f"│ Grad clip    {grad_clip}",
         "│",
         f"│ Objective    {objective}",
-        f"│ Sampling     {prompt_label}"
-        f"temperature {sampling_hyperparameters['temperature']} · "
-        f"top-p {sampling_hyperparameters.get('top_p', 1.0)} · "
-        f"max {sampling_hyperparameters['max_tokens']:,} tokens",
+        (
+            f"│ Sampling     {prompt_label}"
+            f"temperature {sampling_hyperparameters['temperature']} · "
+            f"top-p {sampling_hyperparameters.get('top_p', 1.0)} · "
+            f"max {sampling_hyperparameters['max_tokens']:,} tokens"
+        ),
         f"│ Stop         {stop_text}",
         "│",
-        f"│ Validation   every {training_hyperparameters['eval_interval']} steps · "
-        f"{n_val_examples:,} prompts × {group_size} answers",
-        "│ Logging      W&B cs336-grpo · rollout samples every "
-        f"{training_hyperparameters['log_rollouts_interval']} steps",
+        (
+            f"│ Validation   every {training_hyperparameters['eval_interval']} steps · "
+            f"{n_val_examples:,} prompts × {group_size} answers"
+        ),
+        (
+            "│ Logging      W&B cs336-grpo · rollout samples every "
+            f"{training_hyperparameters['log_rollouts_interval']} steps"
+        ),
         "╰" + "─" * 70,
     ]
     print("\n".join(banner), flush=True)

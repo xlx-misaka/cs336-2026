@@ -34,11 +34,8 @@ def aggregate_loss_across_microbatch(
     ).sum(dim=-1)
 
     if loss_normalization == "sequence":
-        if not mask.any(dim=-1).all(dim=-1):
-            raise ValueError("Mask must have at least one token per sequence.")
-
         per_sequence_policy_gradient_loss = (
-            per_sequence_policy_gradient_loss / mask.sum(dim=-1)
+            per_sequence_policy_gradient_loss / mask.sum(dim=-1).clamp_min(1)
         )
 
         total_policy_gradient_loss = (

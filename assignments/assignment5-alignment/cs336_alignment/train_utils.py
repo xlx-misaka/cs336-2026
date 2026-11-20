@@ -94,7 +94,7 @@ def grpo_train_step(
         microbatch = slice(i, i + microbatch_size)
         masked_inputs_microbatch = masked_input_ids[microbatch]
         masked_labels_microbatch = masked_labels[microbatch]
-        response_mask_microbatch = masked_response_mask[microbatch]
+        masked_response_mask_microbatch = masked_response_mask[microbatch]
 
         log_probs, token_entropy_microbatch = get_response_log_probs(
             model,
@@ -109,12 +109,12 @@ def grpo_train_step(
             importance_reweighting_method,
             old_log_probs,
             cliprange,
-            response_mask_microbatch,
+            masked_response_mask_microbatch,
         )
 
         loss_microbatch = aggregate_loss_across_microbatch(
             per_token_policy_gradient_loss,
-            response_mask_microbatch,
+            masked_response_mask_microbatch,
             loss_normalization,
             normalization_constant,
         )
@@ -125,10 +125,10 @@ def grpo_train_step(
         loss_microbatch.backward()
         loss += loss_microbatch.detach()
 
-        token_counts = response_mask_microbatch.sum(dim=-1)
+        token_counts = masked_response_mask_microbatch.sum(dim=-1)
         sequence_entropy_sums = (
             token_entropy_microbatch.detach()
-            .masked_fill(~response_mask_microbatch, 0.0)
+            .masked_fill(~masked_response_mask_microbatch, 0.0)
             .sum(dim=-1)
         )
         entropy_sum += (sequence_entropy_sums / token_counts.clamp_min(1)).sum()

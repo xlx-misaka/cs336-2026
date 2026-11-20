@@ -209,6 +209,8 @@ def _get_rollout_params(
     training_hyperparameters: dict,
     sampling_hyperparameters: dict,
     prompt: str,
+    *,
+    log_context: str = "rollout",
 ):
     prompts = [prompt.format(question=question) for question in batch["question"]]
     group_size = training_hyperparameters["group_size"]
@@ -241,8 +243,8 @@ def _get_rollout_params(
                     f"Generation failed after {max_attempts} attempts: {error}"
                 ) from error
             print(
-                f"Generation attempt {attempt}/{max_attempts} failed: {error}. "
-                f"Retrying in {attempt}s.",
+                f"[RETRY {log_context}] {error} | "
+                f"attempt {attempt + 1}/{max_attempts} in {attempt}s",
                 flush=True,
             )
             time.sleep(attempt)
@@ -510,6 +512,8 @@ def train_grpo(
     normalization_constant: int | None = None,
     experiment_name: str = "standard-on-policy",
     group_name: str | None = None,
+    *,
+    prompt_name: str | None = None,
 ):
     """运行标准 on-policy GRPO 实验。
 
@@ -574,6 +578,7 @@ def train_grpo(
             用于 "constant" 聚合方式。
         experiment_name (str): 实验名称，默认为"standard-on-policy"。
         group_name (str | None): 实验组名称，默认 None。
+        prompt_name (str | None): 启动信息中显示的提示模板名称。
 
     Notes:
         算法选项通过函数参数传入，未显式传参时使用上述默认值。
@@ -586,30 +591,70 @@ def train_grpo(
     """
     _check_hyperparameters(sampling_hyperparameters, training_hyperparameters)
 
-    print("***** Running training *****", flush=True)
-    print(f"run = {experiment_name}, model = {model_id}", flush=True)
-    print(
-        f"devices = policy={policy_device}, vllm=gpu{vllm_gpu}:{vllm_port}",
-        flush=True,
+    total_steps = training_hyperparameters["num_rollout_steps"]
+    group_size = training_hyperparameters["group_size"]
+    rollout_size = training_hyperparameters["rollout_batch_size"]
+    accum_steps = training_hyperparameters["gradient_accumulation_steps"]
+    prompts_per_batch = rollout_size // group_size
+    max_microbatch_size = (rollout_size - 1) // accum_steps + 1
+    n_val_examples = training_hyperparameters["n_val_examples"]
+    max_grad_norm = training_hyperparameters["max_grad_norm"]
+    grad_clip = "off" if max_grad_norm is None else f"max norm {float(max_grad_norm)}"
+    stop = sampling_hyperparameters.get("stop")
+    stop_text = "none"
+    if stop:
+        keep_stop = sampling_hyperparameters.get("include_stop_str_in_output", False)
+        stop_action = "keep in output" if keep_stop else "omit from output"
+        stop_text = f"{', '.join(stop)} · {stop_action}"
+    prompt_label = f"{prompt_name} · " if prompt_name else ""
+    run_label = f"{experiment_name} · {group_name}" if group_name else experiment_name
+    objective = (
+        f"baseline={baseline} · advantage={advantage_normalizer} · "
+        f"loss={loss_normalization}"
     )
-    print(
-        f"schedule = steps={training_hyperparameters['num_rollout_steps']}, "
-        f"rollout={training_hyperparameters['rollout_batch_size']}, "
-        f"group={training_hyperparameters['group_size']}, "
-        f"accum={training_hyperparameters['gradient_accumulation_steps']}",
-        flush=True,
-    )
-    print(
-        f"data = n_train={training_hyperparameters['n_train_examples']}, "
-        f"n_val={training_hyperparameters['n_val_examples']}, "
-        f"seed={sampling_hyperparameters['seed']}, "
-        f"lr={training_hyperparameters['learning_rate']}",
-        flush=True,
-    )
+    if loss_normalization == "constant":
+        objective += f" (Z={normalization_constant})"
+    if importance_reweighting_method != "none":
+        objective += f" · reweighting={importance_reweighting_method}"
 
+    banner = [
+        "╭─ CS336 · GRPO Training ".ljust(71, "─"),
+        f"│ Run          {run_label}",
+        f"│ Model        {model_id}",
+        f"│ Devices      policy {policy_device} | vLLM cuda:{vllm_gpu} "
+        f"(port {vllm_port}) | seed {sampling_hyperparameters['seed']}",
+        "│",
+        f"│ Training     {total_steps:,} steps · "
+        f"{training_hyperparameters['n_train_examples']:,} training prompts",
+        f"│ Rollout      {prompts_per_batch:,} prompts × {group_size} answers "
+        f"= {rollout_size:,} answers per full step",
+        f"│ Microbatch   up to {max_microbatch_size:,} answers · "
+        f"{accum_steps} accumulation steps configured",
+        f"│ Optimizer    AdamW · lr {training_hyperparameters['learning_rate']:g} · "
+        f"betas {tuple(training_hyperparameters['betas'])} · "
+        f"weight decay {training_hyperparameters['weight_decay']:g}",
+        f"│ Grad clip    {grad_clip}",
+        "│",
+        f"│ Objective    {objective}",
+        f"│ Sampling     {prompt_label}"
+        f"temperature {sampling_hyperparameters['temperature']} · "
+        f"top-p {sampling_hyperparameters.get('top_p', 1.0)} · "
+        f"max {sampling_hyperparameters['max_tokens']:,} tokens",
+        f"│ Stop         {stop_text}",
+        "│",
+        f"│ Validation   every {training_hyperparameters['eval_interval']} steps · "
+        f"{n_val_examples:,} prompts × {group_size} answers",
+        "│ Logging      W&B cs336-grpo · rollout samples every "
+        f"{training_hyperparameters['log_rollouts_interval']} steps",
+        "╰" + "─" * 70,
+    ]
+    print("\n".join(banner), flush=True)
+
+    print("[INIT ] Loading policy model…", flush=True)
     model, tokenizer = get_model_and_tokenizer(model_id, policy_device)
     policy_param = next(model.parameters())
-    print(f"policy = {policy_param.dtype} on {policy_param.device}", flush=True)
+    policy_dtype = str(policy_param.dtype).removeprefix("torch.")
+    print(f"[INIT ] Policy loaded · {policy_dtype} on {policy_param.device}", flush=True)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=training_hyperparameters["learning_rate"],
@@ -623,16 +668,14 @@ def train_grpo(
     )
     train_loader = _get_data_loader(
         train_set_path,
-        training_hyperparameters["rollout_batch_size"]
-        // training_hyperparameters["group_size"],
+        prompts_per_batch,
         training_hyperparameters["n_train_examples"],
         sampling_hyperparameters["seed"],
     )
     valid_loader = _get_data_loader(
         valid_set_path,
-        training_hyperparameters["rollout_batch_size"]
-        // training_hyperparameters["group_size"],
-        training_hyperparameters["n_val_examples"],
+        prompts_per_batch,
+        n_val_examples,
         sampling_hyperparameters["seed"],
     )
     with (
@@ -658,15 +701,16 @@ def train_grpo(
         ExitStack() as cleanup,
     ):
         cleanup.callback(server.stop)
-        print(f"***** Starting vLLM (gpu={vllm_gpu}, port={vllm_port}) *****", flush=True)
+        print(f"[INIT ] Starting vLLM on cuda:{vllm_gpu} (port {vllm_port})…", flush=True)
         server.start()
-        print("***** vLLM ready *****", flush=True)
-        print("***** Initializing weight sync *****", flush=True)
+        print("[INIT ] Initializing weight synchronization…", flush=True)
         server.init_weight_sync(policy_device)
-        print("***** Weight sync ready *****", flush=True)
+        print("[READY] Starting training\n", flush=True)
 
         train_iter = iter(train_loader)
-        for step in range(1, training_hyperparameters["num_rollout_steps"] + 1):
+        step_width = len(str(total_steps))
+        for step in range(1, total_steps + 1):
+            progress = f"{step:0{step_width}d}/{total_steps}"
             try:
                 batch = next(train_iter)
             except StopIteration:
@@ -680,6 +724,7 @@ def train_grpo(
                     training_hyperparameters,
                     sampling_hyperparameters,
                     prompt,
+                    log_context=f"train {progress}",
                 )
             )
 
@@ -687,15 +732,13 @@ def train_grpo(
                 model,
                 tokenizer,
                 optimizer,
-                gradient_accumulation_steps=training_hyperparameters[
-                    "gradient_accumulation_steps"
-                ],
-                max_grad_norm=training_hyperparameters["max_grad_norm"],
+                gradient_accumulation_steps=accum_steps,
+                max_grad_norm=max_grad_norm,
                 reward_fn=reward_fn,
                 repeated_prompts=repeated_prompts,
                 rollout_responses=rollout_responses,
                 repeated_ground_truths=repeated_ground_truths,
-                group_size=training_hyperparameters["group_size"],
+                group_size=group_size,
                 baseline=baseline,
                 advantage_eps=advantage_eps,
                 advantage_normalizer=advantage_normalizer,
@@ -708,24 +751,23 @@ def train_grpo(
 
             server.sync_policy_weights(model)
 
-            metrics = {
-                "loss": round(loss.item(), 4),
-                "grad_norm": round(float(train_log["gradient_norm"]), 3),
-                "reward": round(float(train_log["mean_reward"]), 3),
-                "format_reward": round(float(train_log["mean_format_reward"]), 3),
-                "learning_rate": training_hyperparameters["learning_rate"],
-            }
-            if "token_entropy" in train_log:
-                metrics["entropy"] = round(float(train_log["token_entropy"]), 3)
-            print(
-                f"step {step}/{training_hyperparameters['num_rollout_steps']}: {metrics}",
-                flush=True,
-            )
-
             log_data: dict[str, Any] = {
                 "train/" + key: float(val) if isinstance(val, torch.Tensor) else val
                 for key, val in train_log.items()
             } | {"train/loss": loss.item()}
+            metrics = [
+                f"loss={log_data['train/loss']:.4f}",
+                f"grad={log_data['train/gradient_norm']:.3f}",
+            ]
+            if "train/token_entropy" in log_data:
+                metrics.append(f"entropy={log_data['train/token_entropy']:.3f}")
+            metrics.extend(
+                (
+                    f"reward={log_data['train/mean_reward']:.1%}",
+                    f"format={log_data['train/mean_format_reward']:.1%}",
+                )
+            )
+            print(f"[TRAIN {progress}] {'  '.join(metrics)}", flush=True)
 
             if step % training_hyperparameters["log_rollouts_interval"] == 0:
                 rollout_rewards = [
@@ -746,14 +788,13 @@ def train_grpo(
                 )
 
             if step % training_hyperparameters["eval_interval"] == 0:
-                print("***** Running evaluation *****", flush=True)
+                print(f"[EVAL  {progress}] Running validation…", flush=True)
 
                 eval_start = time.monotonic()
                 mean_reward = 0
                 mean_format_reward = 0
                 mean_response_length = 0
                 accuracy = 0
-                group_size = training_hyperparameters["group_size"]
                 pass_k = [0] * group_size
 
                 for batch in valid_loader:
@@ -765,10 +806,11 @@ def train_grpo(
                                 training_hyperparameters,
                                 sampling_hyperparameters,
                                 prompt,
+                                log_context=f"eval {progress}",
                             )
                         )
                     except _RolloutGenerationError as error:
-                        print(f"step {step} eval failed: {error}", flush=True)
+                        print(f"[EVAL  {progress}] Skipped · {error}", flush=True)
                         log_data["eval/failed"] = 1
                         break
                     for i in range(0, len(rollout_responses), group_size):
@@ -785,7 +827,6 @@ def train_grpo(
                             mean_format_reward += reward_metadata["format_reward"]
                             mean_response_length += len(rollout_responses[i + j])
                 else:
-                    n_val_examples = training_hyperparameters["n_val_examples"]
                     n_responses = n_val_examples * group_size
                     mean_reward /= n_responses
                     mean_format_reward /= n_responses
@@ -796,18 +837,15 @@ def train_grpo(
                         for i, count in enumerate(pass_k)
                     }
 
-                    eval_metrics = {
-                        "eval_reward": round(mean_reward, 3),
-                        "eval_format_reward": round(mean_format_reward, 3),
-                        "eval_response_length_chars": round(mean_response_length, 1),
-                        "eval_accuracy": round(accuracy, 3),
-                        "eval_pass@1": round(pass_metrics["eval/pass@1"], 3),
-                        f"eval_pass@{group_size}": round(
-                            pass_metrics[f"eval/pass@{group_size}"], 3
-                        ),
-                        "eval_runtime": round(time.monotonic() - eval_start, 1),
-                    }
-                    print(f"step {step} eval: {eval_metrics}", flush=True)
+                    eval_elapsed = time.monotonic() - eval_start
+                    print(
+                        f"[EVAL  {progress}] accuracy={accuracy:.1%}  "
+                        f"pass@1={pass_metrics['eval/pass@1']:.1%}  "
+                        f"pass@{group_size}={pass_metrics[f'eval/pass@{group_size}']:.1%}  "
+                        f"reward={mean_reward:.1%}  format={mean_format_reward:.1%}  "
+                        f"avg_len={mean_response_length:.1f} chars  {eval_elapsed:.1f}s",
+                        flush=True,
+                    )
 
                     log_data.update(
                         {

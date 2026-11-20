@@ -65,11 +65,12 @@ def _run_grpo_standard_on_policy_experiments(
         vllm_gpu=1,
         experiment_name=f"{experiment_name}-{timestamp}",
         group_name=group_name,
+        prompt_name=Path(prompt_path).stem,
     )
 
 
 def _run_smoke(seed: int = 0) -> None:
-    print("***** Running smoke test *****", flush=True)
+    print("[RUN  ] Smoke test", flush=True)
 
     _run_grpo_standard_on_policy_experiments(
         seed=seed,

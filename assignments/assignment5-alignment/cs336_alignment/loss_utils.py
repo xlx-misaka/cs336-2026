@@ -48,6 +48,10 @@ def aggregate_loss_across_microbatch(
             raise ValueError(
                 "Normalization constant must be provided when using 'constant' normalization."
             )
+        if normalization_constant <= 0:
+            raise ValueError(
+                "Normalization constant must be greater than 0 when using 'constant' normalization."
+            )
 
         total_policy_gradient_loss = (
             per_sequence_policy_gradient_loss.sum(dim=-1) / normalization_constant

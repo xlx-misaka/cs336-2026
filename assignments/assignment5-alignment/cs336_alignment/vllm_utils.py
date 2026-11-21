@@ -34,7 +34,7 @@ class VLLMServer:
     seed: int = 0
     load_format: str = "auto"
     logging_level: str = "ERROR"
-    gpu_memory_utilization: float = 0.9
+    gpu_memory_utilization: float = 0.8
     launch_server: bool = True
     startup_timeout: int = 600
     shutdown_timeout: int = 30
@@ -87,7 +87,9 @@ class VLLMServer:
         )
 
 
-def _http_json(method: str, url: str, payload: dict | None = None, timeout: int = 60) -> dict:
+def _http_json(
+    method: str, url: str, payload: dict | None = None, timeout: int = 60
+) -> dict:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = urllib.request.Request(
         url,
@@ -153,11 +155,15 @@ def start_server(
     return subprocess.Popen(command, env=env, start_new_session=True)
 
 
-def wait_for_server(base_url: str, process: subprocess.Popen | None, timeout: int) -> None:
+def wait_for_server(
+    base_url: str, process: subprocess.Popen | None, timeout: int
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process is not None and process.poll() is not None:
-            raise RuntimeError(f"vLLM server exited early with code {process.returncode}.")
+            raise RuntimeError(
+                f"vLLM server exited early with code {process.returncode}."
+            )
         try:
             with urllib.request.urlopen(f"{base_url}/health", timeout=5):
                 return
@@ -189,7 +195,10 @@ def generate_completions(
 
     prompt_batches = [prompts]
     if batch_size is not None:
-        prompt_batches = [prompts[start : start + batch_size] for start in range(0, len(prompts), batch_size)]
+        prompt_batches = [
+            prompts[start : start + batch_size]
+            for start in range(0, len(prompts), batch_size)
+        ]
 
     completions = []
     for prompt_batch in prompt_batches:
@@ -204,9 +213,13 @@ def generate_completions(
         }
         if sampling_params.get("stop") is not None:
             payload["stop"] = sampling_params["stop"]
-            payload["include_stop_str_in_output"] = sampling_params.get("include_stop_str_in_output", False)
+            payload["include_stop_str_in_output"] = sampling_params.get(
+                "include_stop_str_in_output", False
+            )
 
-        response = _http_json("POST", f"{vllm_base_url}/v1/completions", payload, timeout=3600)
+        response = _http_json(
+            "POST", f"{vllm_base_url}/v1/completions", payload, timeout=3600
+        )
         choices = sorted(response["choices"], key=lambda choice: choice["index"])
         completions.extend(
             VLLMCompletion(
@@ -223,7 +236,9 @@ def init_weight_sync(vllm_base_url: str, policy_device: str):
     from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngine
     from vllm.utils.network_utils import get_ip, get_open_port
 
-    inference_world_size = _http_json("GET", f"{vllm_base_url}/get_world_size", timeout=10)["world_size"]
+    inference_world_size = _http_json(
+        "GET", f"{vllm_base_url}/get_world_size", timeout=10
+    )["world_size"]
     world_size = inference_world_size + 1
     master_address = get_ip()
     master_port = get_open_port()
@@ -255,7 +270,9 @@ def init_weight_sync(vllm_base_url: str, policy_device: str):
     return weight_sync_group
 
 
-def sync_policy_weights(policy: torch.nn.Module, vllm_base_url: str, weight_sync_group) -> None:
+def sync_policy_weights(
+    policy: torch.nn.Module, vllm_base_url: str, weight_sync_group
+) -> None:
     """Copy policy weights into vLLM and invalidate caches derived from old weights."""
     from vllm.distributed.weight_transfer.nccl_engine import (
         NCCLTrainerSendWeightsArgs,

@@ -757,17 +757,15 @@ def train_grpo(
                 )
             )
 
-            tokenized = tokenize_prompt_and_output(
-                repeated_prompts,
-                rollout_responses,
-                tokenizer,
-            )
-
-            log_probs = get_response_log_probs(
-                model,
-                tokenized["input_ids"].to(policy_device),
-                tokenized["labels"].to(policy_device),
-            )["log_probs"]
+            old_inputs, old_labels = None, None
+            if train_size != rollout_size:
+                old_inputs, old_labels, _ = tokenize_prompt_and_output(
+                    repeated_prompts,
+                    rollout_responses,
+                    tokenizer,
+                ).values()
+                old_inputs = old_inputs.to(policy_device)
+                old_labels = old_labels.to(policy_device)
 
             loss = 0
             entropy_count = 0
@@ -778,10 +776,20 @@ def train_grpo(
                 "gradient_norm": 0.0,
             }
 
-            for train_start in range(0, rollout_size, train_size):
+            for train_start in range(0, len(rollout_responses), train_size):
                 train_bacth = slice(
                     train_start, min(train_start + train_size, rollout_size)
                 )
+
+                log_probs = None
+                if old_inputs is not None and old_labels is not None:
+                    with torch.no_grad():
+                        log_probs = get_response_log_probs(
+                            model,
+                            old_inputs[train_bacth],
+                            old_labels[train_bacth],
+                        )["log_probs"]
+
                 _loss, _train_log = grpo_train_step(
                     model,
                     tokenizer,
@@ -797,7 +805,7 @@ def train_grpo(
                     advantage_eps=advantage_eps,
                     advantage_normalizer=advantage_normalizer,
                     importance_reweighting_method=importance_reweighting_method,
-                    old_log_probs=log_probs[train_bacth],
+                    old_log_probs=log_probs,
                     cliprange=cliprange,
                     loss_normalization=loss_normalization,
                     normalization_constant=normalization_constant,

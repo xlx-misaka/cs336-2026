@@ -18,13 +18,19 @@ def compute_policy_gradient_loss(
     elif importance_reweighting_method == "noclip":
         assert old_log_probs is not None
         per_token_policy_gradient_loss = (
-            -policy_log_probs * rewards * (policy_log_probs - old_log_probs).exp()
+            -rewards * (policy_log_probs - old_log_probs).exp()
         )
     elif importance_reweighting_method == "grpo":
         assert old_log_probs is not None and cliprange is not None
         w = torch.exp(policy_log_probs - old_log_probs)
-        w = min(max(w, 1 - cliprange), 1 + cliprange)
-        per_token_policy_gradient_loss = -policy_log_probs * rewards * w
+        per_token_policy_gradient_loss = -rewards * w
+        w = torch.minimum(
+            torch.maximum(w, torch.full_like(w, 1 - cliprange)),
+            torch.full_like(w, 1 + cliprange),
+        )
+        per_token_policy_gradient_loss = torch.maximum(
+            -rewards * w, per_token_policy_gradient_loss
+        )
     else:
         raise NotImplementedError
 

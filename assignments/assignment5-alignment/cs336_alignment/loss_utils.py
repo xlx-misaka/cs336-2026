@@ -13,7 +13,7 @@ def compute_policy_gradient_loss(
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     rewards = raw_rewards_or_advantages.view(-1, 1).contiguous()
 
-    metadata = {}
+    metadata: dict[str, torch.Tensor] = {}
 
     if importance_reweighting_method == "none":
         per_token_policy_gradient_loss = -policy_log_probs * rewards
@@ -30,15 +30,17 @@ def compute_policy_gradient_loss(
             torch.maximum(w, torch.full_like(w, 1 - cliprange)),
             torch.full_like(w, 1 + cliprange),
         )
+        clipped_loss = -rewards * w
 
         if response_mask is not None:
-            metadata["clip_count"] = (
-                (rewards * w < per_token_policy_gradient_loss).sum().sum()
-            )
-            metadata["clip_total"] = response_mask.sum().sum
+            clipped_tokens = (
+                clipped_loss > per_token_policy_gradient_loss
+            ) & response_mask
+            metadata["clip_count"] = clipped_tokens.sum()
+            metadata["clip_total"] = response_mask.sum()
 
         per_token_policy_gradient_loss = torch.maximum(
-            -rewards * w, per_token_policy_gradient_loss
+            clipped_loss, per_token_policy_gradient_loss
         )
 
     else:

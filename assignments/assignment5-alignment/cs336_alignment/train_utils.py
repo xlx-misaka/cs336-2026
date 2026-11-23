@@ -47,9 +47,13 @@ def grpo_train_step(
     cliprange: float | None = None,
     loss_normalization: Literal["sequence", "constant"] = "sequence",
     normalization_constant: int | None = None,
+    *,
+    token_weighted_entropy: bool | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
     if gradient_accumulation_steps <= 0:
         raise ValueError("gradient_accumulation_steps must be greater than 0.")
+    if token_weighted_entropy is None:
+        token_weighted_entropy = importance_reweighting_method != "none"
 
     device = next(model.parameters()).device
     tokenized = tokenize_prompt_and_output(
@@ -87,6 +91,8 @@ def grpo_train_step(
     loss = torch.zeros((), device=device)
     entropy_sum = torch.zeros((), device=device)
     entropy_count = 0
+    clip_count = 0
+    clip_total = 0
 
     if microbatch_size == 0:
         return (
@@ -113,7 +119,7 @@ def grpo_train_step(
             return_token_entropy=True,
         ).values()
 
-        per_token_policy_gradient_loss, _ = compute_policy_gradient_loss(
+        per_token_policy_gradient_loss, loss_metadata = compute_policy_gradient_loss(
             masked_advantages[microbatch],
             log_probs,
             importance_reweighting_method,
@@ -121,6 +127,9 @@ def grpo_train_step(
             cliprange,
             masked_response_mask_microbatch,
         )
+        if "clip_count" in loss_metadata:
+            clip_count += int(loss_metadata["clip_count"])
+            clip_total += int(loss_metadata["clip_total"])
 
         loss_microbatch = aggregate_loss_across_microbatch(
             per_token_policy_gradient_loss,
@@ -141,8 +150,11 @@ def grpo_train_step(
             .masked_fill(~masked_response_mask_microbatch, 0.0)
             .sum(dim=-1)
         )
-        entropy_sum += sequence_entropy_sums.sum()
-        entropy_count += token_counts.sum().item()
+        if token_weighted_entropy:
+            entropy_sum += sequence_entropy_sums.sum()
+            entropy_count += token_counts.sum().item()
+        else:
+            entropy_sum += (sequence_entropy_sums / token_counts.clamp_min(1)).sum()
 
     if max_grad_norm is not None:
         gradient_norm = torch.nn.utils.clip_grad_norm_(
@@ -161,9 +173,16 @@ def grpo_train_step(
         "gradient_norm": gradient_norm,
     }
 
+    if not token_weighted_entropy:
+        entropy_count = int(masked_response_mask.any(dim=-1).sum().item())
     if entropy_count > 0:
         train_log["token_entropy"] = entropy_sum / entropy_count
-        train_log["entropy_count"] = entropy_count
+        if token_weighted_entropy:
+            train_log["entropy_count"] = entropy_count
+    if clip_total > 0:
+        train_log["clip_fraction"] = clip_count / clip_total
+        train_log["clip_count"] = clip_count
+        train_log["clip_total"] = clip_total
 
     return loss, train_log
 
@@ -500,6 +519,32 @@ def _check_hyperparameters(
         )
 
 
+@torch.no_grad()
+def _compute_old_log_probs(
+    model: torch.nn.Module,
+    tokenizer: PreTrainedTokenizerBase,
+    prompts: list[str],
+    responses: list[str],
+    device: str,
+    gradient_accumulation_steps: int,
+) -> torch.Tensor:
+    """Score a training batch using its own padded sequence width."""
+    tokenized = tokenize_prompt_and_output(prompts, responses, tokenizer)
+    microbatch_size = (len(responses) - 1) // gradient_accumulation_steps + 1
+    return torch.cat(
+        [
+            get_response_log_probs(model, input_ids.to(device), labels.to(device))[
+                "log_probs"
+            ]
+            for input_ids, labels in zip(
+                tokenized["input_ids"].split(microbatch_size),
+                tokenized["labels"].split(microbatch_size),
+                strict=True,
+            )
+        ]
+    )
+
+
 def train_grpo(
     model_id: str,
     prompt: str,
@@ -523,7 +568,7 @@ def train_grpo(
     group_name: str | None = None,
     prompt_name: str | None = None,
 ):
-    """运行标准 on-policy GRPO 实验。
+    """运行 on-policy 或 off-policy GRPO 实验。
 
     Args:
         model_id (str): Hugging Face 模型 ID 或本地模型目录。
@@ -553,8 +598,7 @@ def train_grpo(
             weight_decay (float): 权重衰减，参考值为 0.0。
             rollout_batch_size (int): 每轮生成的回答总数，参考值为 256。
             train_batch_size (int): 每次完整训练更新的回答数，参考值为 256。
-                注意：当前实现只做合法性校验，实际每次更新使用整个 rollout
-                batch（rollout_batch_size 条回答）。
+                每轮 rollout 按该值切成训练子批，尾批可包含更少的回答。
             group_size (int): 每个问题对应的回答数，参考值为 8。
             gradient_accumulation_steps (int): 梯度累积步数，参考值为 32。
             max_grad_norm (float | None): 梯度裁剪阈值，参考值为 1.0。
@@ -578,8 +622,8 @@ def train_grpo(
             重要性加权方式，默认 "none"。
         loss_normalization (Literal["sequence", "constant"]): loss 聚合方式，
             默认 "sequence"。
-        old_log_probs (torch.Tensor | None): 旧的 log_probs，默认 None；
-            on-policy 实验不需要。
+        old_log_probs (torch.Tensor | None): 保留参数。需要重要性加权时，
+            旧分数会在每轮 rollout 的第一次更新前计算。
         cliprange (float | None): clip range，默认 None；
             importance_reweighting_method 为 "grpo" 或 "gspo" 时使用。
         normalization_constant (int | None): 归一化常数，默认 None；
@@ -603,9 +647,10 @@ def train_grpo(
     group_size = training_hyperparameters["group_size"]
     rollout_size = training_hyperparameters["rollout_batch_size"]
     train_size = training_hyperparameters["train_batch_size"]
+    on_policy = importance_reweighting_method == "none" and train_size >= rollout_size
     accum_steps = training_hyperparameters["gradient_accumulation_steps"]
     prompts_per_batch = rollout_size // group_size
-    max_microbatch_size = (rollout_size - 1) // accum_steps + 1
+    max_microbatch_size = (min(train_size, rollout_size) - 1) // accum_steps + 1
     n_val_examples = training_hyperparameters["n_val_examples"]
     max_grad_norm = training_hyperparameters["max_grad_norm"]
     grad_clip = "off" if max_grad_norm is None else f"max norm {float(max_grad_norm)}"
@@ -757,89 +802,90 @@ def train_grpo(
                 )
             )
 
-            old_inputs, old_labels = None, None
-            if train_size != rollout_size:
-                old_inputs, old_labels, _ = tokenize_prompt_and_output(
-                    repeated_prompts,
-                    rollout_responses,
-                    tokenizer,
-                ).values()
-                old_inputs = old_inputs.to(policy_device)
-                old_labels = old_labels.to(policy_device)
+            rollout_count = len(rollout_responses)
+            train_batches = [
+                slice(start, min(start + train_size, rollout_count))
+                for start in range(0, rollout_count, train_size)
+            ]
+            batch_old_log_probs: list[torch.Tensor | None] = [None] * len(train_batches)
+            if importance_reweighting_method != "none":
+                # Score every batch before the first optimizer update.
+                for batch_index, train_batch in enumerate(train_batches):
+                    batch_old_log_probs[batch_index] = _compute_old_log_probs(
+                        model,
+                        tokenizer,
+                        repeated_prompts[train_batch],
+                        rollout_responses[train_batch],
+                        policy_device,
+                        accum_steps,
+                    )
 
-            loss = 0
+            loss = 0.0
             entropy_count = 0
             entropy_sum = 0
-            train_log = {
+            clip_count = 0
+            clip_total = 0
+            train_log: dict[str, torch.Tensor | float] = {
                 "mean_reward": 0.0,
                 "mean_format_reward": 0.0,
                 "gradient_norm": 0.0,
             }
 
-            for train_start in range(0, len(rollout_responses), train_size):
-                train_bacth = slice(
-                    train_start, min(train_start + train_size, rollout_size)
-                )
-
-                log_probs = None
-                if old_inputs is not None and old_labels is not None:
-                    with torch.no_grad():
-                        log_probs = get_response_log_probs(
-                            model,
-                            old_inputs[train_bacth],
-                            old_labels[train_bacth],
-                        )["log_probs"]
-
-                _loss, _train_log = grpo_train_step(
+            for train_batch, old_scores in zip(
+                train_batches, batch_old_log_probs, strict=True
+            ):
+                batch_responses = rollout_responses[train_batch]
+                batch_loss, batch_log = grpo_train_step(
                     model,
                     tokenizer,
                     optimizer,
                     gradient_accumulation_steps=accum_steps,
                     max_grad_norm=max_grad_norm,
                     reward_fn=reward_fn,
-                    repeated_prompts=repeated_prompts[train_bacth],
-                    rollout_responses=rollout_responses[train_bacth],
-                    repeated_ground_truths=repeated_ground_truths[train_bacth],
+                    repeated_prompts=repeated_prompts[train_batch],
+                    rollout_responses=batch_responses,
+                    repeated_ground_truths=repeated_ground_truths[train_batch],
                     group_size=group_size,
                     baseline=baseline,
                     advantage_eps=advantage_eps,
                     advantage_normalizer=advantage_normalizer,
                     importance_reweighting_method=importance_reweighting_method,
-                    old_log_probs=log_probs,
+                    old_log_probs=old_scores,
                     cliprange=cliprange,
                     loss_normalization=loss_normalization,
                     normalization_constant=normalization_constant,
+                    token_weighted_entropy=not on_policy,
                 )
 
-                loss += _loss * len(repeated_prompts[train_bacth]) / rollout_size
-                train_log["gradient_norm"] += float(
-                    _train_log["gradient_norm"]
-                    * len(repeated_prompts[train_bacth])
-                    / rollout_size
-                )
-                train_log["mean_reward"] += float(
-                    _train_log["mean_reward"]
-                    * len(repeated_prompts[train_bacth])
-                    / rollout_size
-                )
-                train_log["mean_format_reward"] += float(
-                    _train_log["mean_format_reward"]
-                    * len(repeated_prompts[train_bacth])
-                    / rollout_size
-                )
-                if "token_entropy" in _train_log:
-                    entropy_sum += float(
-                        _train_log["token_entropy"] * _train_log["entropy_count"]
+                if on_policy:
+                    loss = batch_loss.item()
+                    train_log = batch_log
+                    break
+
+                batch_weight = len(batch_responses) / rollout_count
+                loss += batch_loss.item() * batch_weight
+                for key in train_log:
+                    train_log[key] += float(batch_log[key]) * batch_weight
+                if "token_entropy" in batch_log:
+                    batch_entropy_count = int(batch_log["entropy_count"])
+                    entropy_sum += (
+                        float(batch_log["token_entropy"]) * batch_entropy_count
                     )
-                    entropy_count += float(_train_log["entropy_count"])
+                    entropy_count += batch_entropy_count
+                if "clip_count" in batch_log:
+                    clip_count += int(batch_log["clip_count"])
+                    clip_total += int(batch_log["clip_total"])
 
             if entropy_count > 0:
                 train_log["token_entropy"] = entropy_sum / entropy_count
+            if clip_total > 0:
+                train_log["clip_fraction"] = clip_count / clip_total
 
             server.sync_policy_weights(model)
 
             log_data: dict[str, Any] = {
-                "train/" + key: val for key, val in train_log.items()
+                "train/" + key: float(val) if isinstance(val, torch.Tensor) else val
+                for key, val in train_log.items()
             } | {"train/loss": loss}
             metrics = [
                 f"loss={log_data['train/loss']:.4f}",
@@ -847,6 +893,8 @@ def train_grpo(
             ]
             if "train/token_entropy" in log_data:
                 metrics.append(f"entropy={log_data['train/token_entropy']:.3f}")
+            if "train/clip_fraction" in log_data:
+                metrics.append(f"clip={log_data['train/clip_fraction']:.1%}")
             metrics.extend(
                 (
                     f"reward={log_data['train/mean_reward']:.1%}",

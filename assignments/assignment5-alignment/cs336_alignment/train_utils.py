@@ -809,7 +809,6 @@ def train_grpo(
             ]
             batch_old_log_probs: list[torch.Tensor | None] = [None] * len(train_batches)
             if importance_reweighting_method != "none":
-                # Score every batch before the first optimizer update.
                 for batch_index, train_batch in enumerate(train_batches):
                     batch_old_log_probs[batch_index] = _compute_old_log_probs(
                         model,

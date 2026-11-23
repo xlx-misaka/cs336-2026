@@ -79,10 +79,14 @@ def grpo_train_step(
     masked_labels = labels[none_zero_mask]
     masked_advantages = advantages[none_zero_mask]
     masked_response_mask = response_mask[none_zero_mask]
+    masked_old_probs = (
+        old_log_probs[none_zero_mask] if old_log_probs is not None else None
+    )
 
     microbatch_size = (len(masked_input_ids) - 1) // gradient_accumulation_steps + 1
     loss = torch.zeros((), device=device)
     entropy_sum = torch.zeros((), device=device)
+    entropy_count = 0
 
     if microbatch_size == 0:
         return (
@@ -98,6 +102,9 @@ def grpo_train_step(
         masked_inputs_microbatch = masked_input_ids[microbatch]
         masked_labels_microbatch = masked_labels[microbatch]
         masked_response_mask_microbatch = masked_response_mask[microbatch]
+        masked_old_probs_microbatch = (
+            masked_old_probs[microbatch] if masked_old_probs is not None else None
+        )
 
         log_probs, token_entropy_microbatch = get_response_log_probs(
             model,
@@ -110,7 +117,7 @@ def grpo_train_step(
             masked_advantages[microbatch],
             log_probs,
             importance_reweighting_method,
-            old_log_probs,
+            masked_old_probs_microbatch,
             cliprange,
             masked_response_mask_microbatch,
         )
@@ -134,7 +141,8 @@ def grpo_train_step(
             .masked_fill(~masked_response_mask_microbatch, 0.0)
             .sum(dim=-1)
         )
-        entropy_sum += (sequence_entropy_sums / token_counts.clamp_min(1)).sum()
+        entropy_sum += sequence_entropy_sums.sum()
+        entropy_count += token_counts.sum().item()
 
     if max_grad_norm is not None:
         gradient_norm = torch.nn.utils.clip_grad_norm_(
@@ -152,9 +160,10 @@ def grpo_train_step(
         **raw_rewards_metadata,
         "gradient_norm": gradient_norm,
     }
-    entropy_count = int(masked_response_mask.any(dim=-1).sum().item())
+
     if entropy_count > 0:
         train_log["token_entropy"] = entropy_sum / entropy_count
+        train_log["entropy_count"] = entropy_count
 
     return loss, train_log
 
@@ -593,6 +602,7 @@ def train_grpo(
     total_steps = training_hyperparameters["num_rollout_steps"]
     group_size = training_hyperparameters["group_size"]
     rollout_size = training_hyperparameters["rollout_batch_size"]
+    train_size = training_hyperparameters["train_batch_size"]
     accum_steps = training_hyperparameters["gradient_accumulation_steps"]
     prompts_per_batch = rollout_size // group_size
     max_microbatch_size = (rollout_size - 1) // accum_steps + 1
@@ -747,33 +757,74 @@ def train_grpo(
                 )
             )
 
-            loss, train_log = grpo_train_step(
-                model,
+            tokenized = tokenize_prompt_and_output(
+                repeated_prompts,
+                rollout_responses,
                 tokenizer,
-                optimizer,
-                gradient_accumulation_steps=accum_steps,
-                max_grad_norm=max_grad_norm,
-                reward_fn=reward_fn,
-                repeated_prompts=repeated_prompts,
-                rollout_responses=rollout_responses,
-                repeated_ground_truths=repeated_ground_truths,
-                group_size=group_size,
-                baseline=baseline,
-                advantage_eps=advantage_eps,
-                advantage_normalizer=advantage_normalizer,
-                importance_reweighting_method=importance_reweighting_method,
-                old_log_probs=old_log_probs,
-                cliprange=cliprange,
-                loss_normalization=loss_normalization,
-                normalization_constant=normalization_constant,
             )
+
+            log_probs = get_response_log_probs(
+                model,
+                tokenized["input_ids"].to(policy_device),
+                tokenized["labels"].to(policy_device),
+            )["log_probs"]
+
+            loss = 0
+            entropy_count = 0
+            train_count = rollout_size // train_size
+            train_log = {
+                "token_entropy": 0.0,
+                "mean_reward": 0.0,
+                "mean_format_reward": 0.0,
+            }
+
+            for train_start in range(0, rollout_size, train_size):
+                _loss, _train_log = grpo_train_step(
+                    model,
+                    tokenizer,
+                    optimizer,
+                    gradient_accumulation_steps=accum_steps,
+                    max_grad_norm=max_grad_norm,
+                    reward_fn=reward_fn,
+                    repeated_prompts=repeated_prompts[
+                        train_start : train_start + train_size
+                    ],
+                    rollout_responses=rollout_responses[
+                        train_start : train_start + train_size
+                    ],
+                    repeated_ground_truths=repeated_ground_truths[
+                        train_start : train_start + train_size
+                    ],
+                    group_size=group_size,
+                    baseline=baseline,
+                    advantage_eps=advantage_eps,
+                    advantage_normalizer=advantage_normalizer,
+                    importance_reweighting_method=importance_reweighting_method,
+                    old_log_probs=log_probs[train_start : train_start + train_size],
+                    cliprange=cliprange,
+                    loss_normalization=loss_normalization,
+                    normalization_constant=normalization_constant,
+                )
+                loss += _loss
+                train_log["mean_reward"] += float(_train_log["mean_reward"])
+                train_log["mean_format_reward"] += float(
+                    _train_log["mean_format_reward"]
+                )
+                if "token_entroy" in _train_log:
+                    train_log["token_entropy"] += float(_train_log["token_entropy"])
+                    entropy_count += float(_train_log["entropy_count"])
+
+            loss /= train_count
+            train_log["mean_reward"] /= train_count
+            train_log["mean_format_reward"] /= train_count
+            if "token_entropy" in train_log:
+                train_log["token_entropy"] /= entropy_count
 
             server.sync_policy_weights(model)
 
             log_data: dict[str, Any] = {
-                "train/" + key: float(val) if isinstance(val, torch.Tensor) else val
-                for key, val in train_log.items()
-            } | {"train/loss": loss.item()}
+                "train/" + key: val for key, val in train_log.items()
+            } | {"train/loss": loss}
             metrics = [
                 f"loss={log_data['train/loss']:.4f}",
                 f"grad={log_data['train/gradient_norm']:.3f}",

@@ -13,7 +13,20 @@ def compute_policy_gradient_loss(
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     rewards = raw_rewards_or_advantages.view(-1, 1).contiguous()
 
-    per_token_policy_gradient_loss = -policy_log_probs * rewards
+    if importance_reweighting_method == "none":
+        per_token_policy_gradient_loss = -policy_log_probs * rewards
+    elif importance_reweighting_method == "noclip":
+        assert old_log_probs is not None
+        per_token_policy_gradient_loss = (
+            -policy_log_probs * rewards * (policy_log_probs - old_log_probs).exp()
+        )
+    elif importance_reweighting_method == "grpo":
+        assert old_log_probs is not None and cliprange is not None
+        w = torch.exp(policy_log_probs - old_log_probs)
+        w = min(max(w, 1 - cliprange), 1 + cliprange)
+        per_token_policy_gradient_loss = -policy_log_probs * rewards * w
+    else:
+        raise NotImplementedError
 
     return (per_token_policy_gradient_loss, {})
 

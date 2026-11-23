@@ -771,7 +771,6 @@ def train_grpo(
 
             loss = 0
             entropy_count = 0
-            train_count = rollout_size // train_size
             train_log = {
                 "token_entropy": 0.0,
                 "mean_reward": 0.0,
@@ -779,6 +778,9 @@ def train_grpo(
             }
 
             for train_start in range(0, rollout_size, train_size):
+                train_bacth = slice(
+                    train_start, min(train_start + train_size, rollout_size)
+                )
                 _loss, _train_log = grpo_train_step(
                     model,
                     tokenizer,
@@ -786,37 +788,34 @@ def train_grpo(
                     gradient_accumulation_steps=accum_steps,
                     max_grad_norm=max_grad_norm,
                     reward_fn=reward_fn,
-                    repeated_prompts=repeated_prompts[
-                        train_start : train_start + train_size
-                    ],
-                    rollout_responses=rollout_responses[
-                        train_start : train_start + train_size
-                    ],
-                    repeated_ground_truths=repeated_ground_truths[
-                        train_start : train_start + train_size
-                    ],
+                    repeated_prompts=repeated_prompts[train_bacth],
+                    rollout_responses=rollout_responses[train_bacth],
+                    repeated_ground_truths=repeated_ground_truths[train_bacth],
                     group_size=group_size,
                     baseline=baseline,
                     advantage_eps=advantage_eps,
                     advantage_normalizer=advantage_normalizer,
                     importance_reweighting_method=importance_reweighting_method,
-                    old_log_probs=log_probs[train_start : train_start + train_size],
+                    old_log_probs=log_probs[train_bacth],
                     cliprange=cliprange,
                     loss_normalization=loss_normalization,
                     normalization_constant=normalization_constant,
                 )
-                loss += _loss
-                train_log["mean_reward"] += float(_train_log["mean_reward"])
+                loss += _loss * len(repeated_prompts[train_bacth]) / rollout_size
+                train_log["mean_reward"] += (
+                    float(_train_log["mean_reward"])
+                    * len(repeated_prompts[train_bacth])
+                    / rollout_size
+                )
                 train_log["mean_format_reward"] += float(
                     _train_log["mean_format_reward"]
+                    * len(repeated_prompts[train_bacth])
+                    / rollout_size
                 )
-                if "token_entroy" in _train_log:
+                if "token_entropy" in _train_log:
                     train_log["token_entropy"] += float(_train_log["token_entropy"])
                     entropy_count += float(_train_log["entropy_count"])
 
-            loss /= train_count
-            train_log["mean_reward"] /= train_count
-            train_log["mean_format_reward"] /= train_count
             if "token_entropy" in train_log:
                 train_log["token_entropy"] /= entropy_count
 

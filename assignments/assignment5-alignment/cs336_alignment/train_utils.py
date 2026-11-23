@@ -771,10 +771,11 @@ def train_grpo(
 
             loss = 0
             entropy_count = 0
+            entropy_sum = 0
             train_log = {
-                "token_entropy": 0.0,
                 "mean_reward": 0.0,
                 "mean_format_reward": 0.0,
+                "gradient_norm": 0.0,
             }
 
             for train_start in range(0, rollout_size, train_size):
@@ -801,9 +802,15 @@ def train_grpo(
                     loss_normalization=loss_normalization,
                     normalization_constant=normalization_constant,
                 )
+
                 loss += _loss * len(repeated_prompts[train_bacth]) / rollout_size
-                train_log["mean_reward"] += (
-                    float(_train_log["mean_reward"])
+                train_log["gradient_norm"] += float(
+                    _train_log["gradient_norm"]
+                    * len(repeated_prompts[train_bacth])
+                    / rollout_size
+                )
+                train_log["mean_reward"] += float(
+                    _train_log["mean_reward"]
                     * len(repeated_prompts[train_bacth])
                     / rollout_size
                 )
@@ -813,11 +820,13 @@ def train_grpo(
                     / rollout_size
                 )
                 if "token_entropy" in _train_log:
-                    train_log["token_entropy"] += float(_train_log["token_entropy"])
+                    entropy_sum += float(
+                        _train_log["token_entropy"] * _train_log["entropy_count"]
+                    )
                     entropy_count += float(_train_log["entropy_count"])
 
-            if "token_entropy" in train_log:
-                train_log["token_entropy"] /= entropy_count
+            if entropy_count > 0:
+                train_log["token_entropy"] = entropy_sum / entropy_count
 
             server.sync_policy_weights(model)
 

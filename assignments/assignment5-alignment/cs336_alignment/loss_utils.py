@@ -49,19 +49,21 @@ def compute_policy_gradient_loss(
 
         s = (policy_log_probs - old_log_probs).where(response_mask, 0.0).sum(
             dim=-1, keepdim=True
-        ) / policy_log_probs.shape[-1]
+        ) / response_mask.sum(dim=-1, keepdim=True)
+        s = s.exp()
 
         per_token_policy_gradient_loss = -rewards * s
 
         clipped_loss = -rewards * s.clamp(1 - cliprange, 1 + cliprange)
 
-        clipped_tokens = (clipped_loss > per_token_policy_gradient_loss) & response_mask
+        clipped_tokens = clipped_loss > per_token_policy_gradient_loss
+
         metadata["clip_count"] = clipped_tokens.sum()
-        metadata["clip_total"] = response_mask.sum()
+        metadata["clip_total"] = response_mask.any(-1).sum(-1)
 
         per_token_policy_gradient_loss = torch.maximum(
             clipped_loss, per_token_policy_gradient_loss
-        )
+        ).expand_as(policy_log_probs)
 
     return (per_token_policy_gradient_loss, metadata)
 

@@ -26,10 +26,7 @@ def compute_policy_gradient_loss(
         assert old_log_probs is not None and cliprange is not None
         w = torch.exp(policy_log_probs - old_log_probs)
         per_token_policy_gradient_loss = -rewards * w
-        w = torch.minimum(
-            torch.maximum(w, torch.full_like(w, 1 - cliprange)),
-            torch.full_like(w, 1 + cliprange),
-        )
+        w = w.clamp(1 - cliprange, 1 + cliprange)
         clipped_loss = -rewards * w
 
         if response_mask is not None:
@@ -44,7 +41,25 @@ def compute_policy_gradient_loss(
         )
 
     else:
-        raise NotImplementedError
+        assert old_log_probs is not None and cliprange is not None
+        s = (policy_log_probs - old_log_probs).sum(
+            dim=-1, keepdim=True
+        ) / policy_log_probs.shape[-1]
+
+        per_token_policy_gradient_loss = -rewards * s
+
+        clipped_loss = -rewards * s.clamp(1 - cliprange, 1 + cliprange)
+
+        if response_mask is not None:
+            clipped_tokens = (
+                clipped_loss > per_token_policy_gradient_loss
+            ) & response_mask
+            metadata["clip_count"] = clipped_tokens.sum()
+            metadata["clip_total"] = response_mask.sum()
+
+        per_token_policy_gradient_loss = torch.maximum(
+            clipped_loss, per_token_policy_gradient_loss
+        )
 
     return (per_token_policy_gradient_loss, metadata)
 

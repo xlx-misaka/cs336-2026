@@ -55,6 +55,7 @@ def grpo_train_step(
     if token_weighted_entropy is None:
         token_weighted_entropy = importance_reweighting_method != "none"
 
+    log_prob_dtype = torch.float32 if importance_reweighting_method == "gspo" else None
     device = next(model.parameters()).device
     tokenized = tokenize_prompt_and_output(
         repeated_prompts, rollout_responses, tokenizer
@@ -117,6 +118,7 @@ def grpo_train_step(
             masked_inputs_microbatch,
             masked_labels_microbatch,
             return_token_entropy=True,
+            log_prob_dtype=log_prob_dtype,
         ).values()
 
         per_token_policy_gradient_loss, loss_metadata = compute_policy_gradient_loss(
@@ -527,15 +529,20 @@ def _compute_old_log_probs(
     responses: list[str],
     device: str,
     gradient_accumulation_steps: int,
+    *,
+    log_prob_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     """Score a training batch using its own padded sequence width."""
     tokenized = tokenize_prompt_and_output(prompts, responses, tokenizer)
     microbatch_size = (len(responses) - 1) // gradient_accumulation_steps + 1
     return torch.cat(
         [
-            get_response_log_probs(model, input_ids.to(device), labels.to(device))[
-                "log_probs"
-            ]
+            get_response_log_probs(
+                model,
+                input_ids.to(device),
+                labels.to(device),
+                log_prob_dtype=log_prob_dtype,
+            )["log_probs"]
             for input_ids, labels in zip(
                 tokenized["input_ids"].split(microbatch_size),
                 tokenized["labels"].split(microbatch_size),
@@ -648,6 +655,7 @@ def train_grpo(
     rollout_size = training_hyperparameters["rollout_batch_size"]
     train_size = training_hyperparameters["train_batch_size"]
     on_policy = importance_reweighting_method == "none" and train_size >= rollout_size
+    log_prob_dtype = torch.float32 if importance_reweighting_method == "gspo" else None
     accum_steps = training_hyperparameters["gradient_accumulation_steps"]
     prompts_per_batch = rollout_size // group_size
     max_microbatch_size = (min(train_size, rollout_size) - 1) // accum_steps + 1
@@ -817,6 +825,7 @@ def train_grpo(
                         rollout_responses[train_batch],
                         policy_device,
                         accum_steps,
+                        log_prob_dtype=log_prob_dtype,
                     )
 
             loss = 0.0

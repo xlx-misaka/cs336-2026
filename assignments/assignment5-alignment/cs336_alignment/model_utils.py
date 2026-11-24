@@ -6,9 +6,15 @@ def get_response_log_probs(
     input_ids: torch.Tensor,
     labels: torch.Tensor,
     return_token_entropy: bool = False,
+    *,
+    log_prob_dtype: torch.dtype | None = None,
 ) -> dict[str, torch.Tensor]:
 
-    logits = torch.nn.functional.log_softmax(model(input_ids).logits, dim=-1)
+    logits = torch.nn.functional.log_softmax(
+        model(input_ids).logits,
+        dim=-1,
+        dtype=log_prob_dtype,
+    )
     log_probs = logits.gather(dim=-1, index=labels[:, :, None])[:, :, 0]
 
     token_entropy = torch.empty_like(log_probs)

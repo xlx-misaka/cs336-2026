@@ -93,6 +93,86 @@ def _run_grpo_on_policy_experiments(
     )
 
 
+def _run_grpo_off_policy_experiments(
+    seed: int = 0,
+    prompt_path: str = "cs336_alignment/prompts/r1_zero.prompt",
+    reward_fn: Callable[[str, str], dict[str, float]] = r1_zero_reward_fn,
+    training_hyperparameters_overrides: dict[str, Any] | None = None,
+    experiment_name: str = "standard-off-policy",
+    group_name: str | None = None,
+    importance_reweighting_method: Literal["none", "noclip", "grpo", "gspo"] = "none",
+):
+    model_id = "models/OLMo-2-0425-1B"
+
+    with open(prompt_path, encoding="utf-8") as f:
+        prompt = f.read()
+    if Path(prompt_path).name.startswith("r1_zero"):
+        prompt_params = {
+            "stop": ["</answer>"],
+            "include_stop_str_in_output": True,
+        }
+    else:
+        prompt_params = {}
+
+    train_set_path = "data/gsm8k/train.jsonl"
+    valid_set_path = "data/gsm8k/test.jsonl"
+    sampling_hyperparameters = {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "max_tokens": 512,
+        "seed": seed,
+    } | prompt_params
+    training_hyperparameters = {
+        "learning_rate": 1e-5,
+        "betas": (0.9, 0.95),
+        "weight_decay": 0.0,
+        "rollout_batch_size": 256,
+        "train_batch_size": 8,
+        "group_size": 8,
+        "gradient_accumulation_steps": 1,
+        "max_grad_norm": 1,
+        "num_rollout_steps": 200,
+        "n_train_examples": 6400,
+        "n_val_examples": 1024,
+        "eval_interval": 10,
+        "log_rollouts_interval": 40,
+        **(training_hyperparameters_overrides or {}),
+    }
+
+    baseline = "mean"
+    advantage_normalizer = "std"
+    loss_normalization = "sequence"
+    normalization_constant = None
+
+    cliprange = None
+    if importance_reweighting_method == "grpo":
+        cliprange = 0.2
+    elif importance_reweighting_method == "gspo":
+        cliprange = 3e-4
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    train_grpo(
+        model_id,
+        prompt,
+        reward_fn,
+        train_set_path,
+        valid_set_path,
+        sampling_hyperparameters,
+        training_hyperparameters,
+        vllm_gpu=1,
+        experiment_name=f"{experiment_name}-{timestamp}",
+        group_name=group_name,
+        prompt_name=Path(prompt_path).stem,
+        baseline=baseline,
+        advantage_normalizer=advantage_normalizer,
+        loss_normalization=loss_normalization,
+        normalization_constant=normalization_constant,
+        importance_reweighting_method=importance_reweighting_method,
+        cliprange=cliprange,
+    )
+
+
 def _run_smoke_on_policy(seed: int = 0) -> None:
     print("***** Running smoke test *****", flush=True)
 
@@ -196,6 +276,43 @@ def _run_variant_ablation_on_policy():
 
     for variant in variants:
         _run_4_seed_experiments_on_policy(
+            variant=variant,
+        )
+
+
+def _run_4_seed_experiments_off_policy(
+    prompt_path: str = "cs336_alignment/prompts/r1_zero.prompt",
+    reward_fn: Callable[[str, str], dict[str, float]] = r1_zero_reward_fn,
+    variant: Literal["none", "noclip", "grpo", "gspo"] = "none",
+):
+    print("***** Running 4 seed experiments *****", flush=True)
+
+    for seed in range(4):
+        _run_grpo_off_policy_experiments(
+            seed=seed,
+            prompt_path=prompt_path,
+            reward_fn=reward_fn,
+            importance_reweighting_method=variant,
+            experiment_name=f"{variant}-off-policy-{Path(prompt_path).stem}-seed-{seed}",
+            group_name="4 seed experiments",
+        )
+
+
+def _run_variant_ablation_off_policy():
+    print(
+        "***** Running variants ablation experiments *****",
+        flush=True,
+    )
+
+    variants: list[Literal["none", "noclip", "grpo", "gspo"]] = [
+        "none",
+        "noclip",
+        "grpo",
+        "gspo",
+    ]
+
+    for variant in variants:
+        _run_4_seed_experiments_off_policy(
             variant=variant,
         )
 

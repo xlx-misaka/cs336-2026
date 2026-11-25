@@ -27,19 +27,27 @@ def parse_mmlu_response(
         else None.
     """
     response = re.split(
-        r"^[ \t]*#\s*Query\s*:", model_output, maxsplit=1, flags=re.I | re.M
+        r"^[ \t]*#\s*Query\s*:",
+        model_output,
+        maxsplit=1,
+        flags=re.I | re.M,
     )[0]
     response = response.replace("**", "").replace("`", "").strip()
 
-    answer_prefix = r"\b(?:(?:correct|final)\s+)?answer(?:\s+is\s+|\s*:\s*)"
+    answer_marker = r"answer(?:\s+is\s+|\s*:\s*)"
+    qualified_prefix = r"\b(?:(correct|final|wrong|incorrect)\s+)?" + answer_marker
+    option_pattern = (
+        r"(?:option\s+)?\(?([A-D])"
+        r"(?:\)|(?=[ \t]*(?:[.!?,:;\n]|$)|[ \t]+because\b))"
+    )
     letters = {
         letter.upper()
-        for letter in re.findall(
-            answer_prefix
-            + r"(?:option\s+)?\(?([A-D])(?:\)|(?=[ \t]*(?:[.!?,:;\n]|$)))",
+        for qualifier, letter in re.findall(
+            qualified_prefix + option_pattern,
             response,
             flags=re.I,
         )
+        if qualifier.casefold() not in {"wrong", "incorrect"}
     }
     if letters:
         return next(iter(letters)) if len(letters) == 1 else None
@@ -48,8 +56,10 @@ def parse_mmlu_response(
     if leading_option:
         return leading_option.group(1).upper()
 
+    answer_prefix = r"\b(?:(?:correct|final)\s+)?" + answer_marker
     answer_text = re.sub(r"^(?:the\s+)?" + answer_prefix, "", response, flags=re.I)
     normalized = " ".join(answer_text.casefold().rstrip(" .!?").split())
+
     matches = [
         letter
         for letter, option in zip("ABCD", mmlu_example["options"])

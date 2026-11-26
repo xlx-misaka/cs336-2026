@@ -1,3 +1,9 @@
+import argparse
+import json
+from collections.abc import Callable
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from time import perf_counter
 from typing import Any
 
 import regex as re
@@ -102,3 +108,111 @@ def parse_gsm8k_response(
         return None
 
     return numbers[-1].replace(",", "").removeprefix("+")
+
+
+def parse_zero_shot_args(
+    task_name: str, *, model: Path, dataset: Path, output: Path
+) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=f"Evaluate zero-shot {task_name}.")
+    parser.add_argument("--model", default=str(model))
+    parser.add_argument("--dataset", type=Path, default=dataset)
+    parser.add_argument("--output", type=Path, default=output)
+    parser.add_argument("--limit", type=int, help="Evaluate only the first N examples.")
+    parser.add_argument("--max-model-len", type=int, default=2048)
+    parser.add_argument("--max-num-seqs", type=int, default=32)
+    parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    args = parser.parse_args()
+    if args.limit is not None and args.limit <= 0:
+        parser.error("--limit must be positive.")
+    if not 0 < args.max_tokens < args.max_model_len:
+        parser.error("--max-tokens must be positive and smaller than --max-model-len.")
+    if args.max_num_seqs <= 0:
+        parser.error("--max-num-seqs must be positive.")
+    if not 0 < args.gpu_memory_utilization <= 1:
+        parser.error("--gpu-memory-utilization must be in (0, 1].")
+    return args
+
+
+def evaluate_zero_shot(
+    args: argparse.Namespace,
+    task_name: str,
+    examples: list[dict[str, Any]],
+    prompts: list[str],
+    score_response: Callable[[dict[str, Any], str], tuple[str | None, bool]],
+) -> dict[str, Any]:
+    """Generate a single response per prompt and collect per-example scores."""
+    from vllm import LLM, SamplingParams
+
+    sampling = {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": args.max_tokens,
+        "stop": ["# Query:"],
+    }
+    sampling_params = SamplingParams(**sampling)
+    llm = LLM(
+        model=args.model,
+        dtype="bfloat16",
+        max_model_len=args.max_model_len,
+        max_num_seqs=args.max_num_seqs,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+    )
+
+    print(
+        f"Evaluating {args.model} on {len(examples):,} {task_name} examples...",
+        flush=True,
+    )
+    start = perf_counter()
+    outputs = llm.generate(prompts, sampling_params)
+    generation_seconds = perf_counter() - start
+
+    samples = []
+    for example, output in zip(examples, outputs, strict=True):
+        completion = output.outputs[0]
+        prediction, correct = score_response(example, completion.text)
+        samples.append(
+            {
+                **example,
+                "response": completion.text,
+                "prediction": prediction,
+                "correct": correct,
+                "finish_reason": completion.finish_reason,
+            }
+        )
+
+    num_correct = sum(sample["correct"] for sample in samples)
+    return {
+        "model": args.model,
+        "dataset": str(args.dataset),
+        "sampling": sampling,
+        "num_examples": len(samples),
+        "num_correct": num_correct,
+        "num_parse_failures": sum(sample["prediction"] is None for sample in samples),
+        "accuracy": num_correct / len(samples),
+        "generation_seconds": generation_seconds,
+        "examples_per_second": len(samples) / generation_seconds,
+        "samples": samples,
+    }
+
+
+def save_results(path: Path, results: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=path.parent) as directory:
+        temporary_path = Path(directory) / path.name
+        with temporary_path.open("w", encoding="utf-8") as file:
+            json.dump(results, file, ensure_ascii=False, indent=2)
+            file.write("\n")
+        temporary_path.replace(path)
+
+
+def report_zero_shot_results(path: Path, results: dict[str, Any]) -> None:
+    save_results(path, results)
+    print(
+        f"Accuracy: {results['accuracy']:.2%} "
+        f"({results['num_correct']:,}/{results['num_examples']:,}) | "
+        f"Parse failures: {results['num_parse_failures']:,} | "
+        f"Generation: {results['generation_seconds']:.2f}s "
+        f"({results['examples_per_second']:.2f} examples/s)"
+    )
+    print(f"Results saved to {path}")

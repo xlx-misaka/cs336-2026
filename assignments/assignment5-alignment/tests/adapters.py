@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
 
 from cs336_alignment.data_utils import tokenize_prompt_and_output
-from cs336_alignment.eval_utils import parse_mmlu_response
+from cs336_alignment.eval_utils import parse_gsm8k_response, parse_mmlu_response
 from cs336_alignment.loss_utils import (
     aggregate_loss_across_microbatch,
     compute_policy_gradient_loss,
@@ -485,7 +485,9 @@ def run_parse_gsm8k_response(
         str with the predicted numeric answer if the model output can be parsed into a prediction,
         else None.
     """
-    raise NotImplementedError
+    return parse_gsm8k_response(
+        model_output=model_output,
+    )
 
 
 def run_compute_per_instance_dpo_loss(

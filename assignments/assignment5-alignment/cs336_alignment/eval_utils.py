@@ -75,5 +75,30 @@ def parse_mmlu_response(
         for letter, option in zip("ABCD", mmlu_example["options"])
         if " ".join(option.casefold().rstrip(" .!?").split()) == normalized
     ]
-    
+
     return matches[0] if len(matches) == 1 else None
+
+
+def parse_gsm8k_response(
+    model_output: str,
+) -> str | None:
+    """
+    Given a GSM8K model output, parse the model output into a predicted numeric answer by
+    taking the last number that occurs in the output.
+
+    model_output: str
+        str with the model's output to a GSM8K example.
+
+    Returns:
+        str with the predicted numeric answer if the model output can be parsed into a prediction,
+        else None.
+    """
+    number_pattern = (
+        r"[+-]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)"
+        r"(?:[eE][+-]?\d+)?"
+    )
+    numbers = re.findall(number_pattern, model_output.replace("\u2212", "-"))
+    if not numbers:
+        return None
+
+    return numbers[-1].replace(",", "").removeprefix("+")

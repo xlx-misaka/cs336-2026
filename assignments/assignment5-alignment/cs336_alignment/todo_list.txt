@@ -1,0 +1,4 @@
+# TODO
+run cs336_alignment/grpo_experiments.py on 2 5090
+run mmlu_baseline on 5090
+run gsm8k_baseline on 5090

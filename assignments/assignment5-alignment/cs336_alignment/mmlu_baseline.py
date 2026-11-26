@@ -18,7 +18,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate zero-shot MMLU.")
     parser.add_argument("--model", default=str(MODEL_PATH / "Llama-3.1-8B"))
     parser.add_argument("--dataset", type=Path, default=DATA_PATH / "mmlu" / "test")
-    parser.add_argument("--output", type=Path, default=OUTPUT_PATH / "mmlu_baseline.json")
+    parser.add_argument(
+        "--output", type=Path, default=OUTPUT_PATH / "mmlu_baseline.json"
+    )
     parser.add_argument("--limit", type=int, help="Evaluate only the first N examples.")
     parser.add_argument("--max-model-len", type=int, default=2048)
     parser.add_argument("--max-num-seqs", type=int, default=32)
@@ -71,7 +73,9 @@ def load_mmlu_examples(dataset_path: Path, limit: int | None) -> list[dict[str, 
 
 def format_prompts(examples: list[dict[str, Any]]) -> list[str]:
     task = (PROMPT_PATH / "mmlu_zero_shot.prompt").read_text(encoding="utf-8")
-    system = (PROMPT_PATH / "zero_shot_system_prompt.prompt").read_text(encoding="utf-8")
+    system = (PROMPT_PATH / "zero_shot_system_prompt.prompt").read_text(
+        encoding="utf-8"
+    )
     prompts = []
     for example in examples:
         instruction = task.format(

@@ -40,13 +40,23 @@ def parse_mmlu_response(
         r"(?:option\s+)?\(?([A-D])"
         r"(?:\)|(?=[ \t]*(?:[.!?,:;\n]|$)|[ \t]+because\b))"
     )
+    answer_matches = re.findall(
+        qualified_prefix + option_pattern,
+        response,
+        flags=re.I,
+    )
+
+    final_letters = {
+        letter.upper()
+        for qualifier, letter in answer_matches
+        if qualifier.casefold() == "final"
+    }
+    if final_letters:
+        return next(iter(final_letters)) if len(final_letters) == 1 else None
+
     letters = {
         letter.upper()
-        for qualifier, letter in re.findall(
-            qualified_prefix + option_pattern,
-            response,
-            flags=re.I,
-        )
+        for qualifier, letter in answer_matches
         if qualifier.casefold() not in {"wrong", "incorrect"}
     }
     if letters:
@@ -65,5 +75,5 @@ def parse_mmlu_response(
         for letter, option in zip("ABCD", mmlu_example["options"])
         if " ".join(option.casefold().rstrip(" .!?").split()) == normalized
     ]
-
+    
     return matches[0] if len(matches) == 1 else None

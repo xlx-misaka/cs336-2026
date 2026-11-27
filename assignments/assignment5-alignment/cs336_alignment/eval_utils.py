@@ -4,9 +4,12 @@ from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import regex as re
+
+if TYPE_CHECKING:
+    from vllm.outputs import RequestOutput
 
 
 def parse_mmlu_response(
@@ -111,7 +114,12 @@ def parse_gsm8k_response(
 
 
 def parse_zero_shot_args(
-    task_name: str, *, model: Path, dataset: Path, output: Path
+    task_name: str,
+    *,
+    model: Path,
+    dataset: Path,
+    output: Path,
+    max_tokens: int = 512,
 ) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=f"Evaluate zero-shot {task_name}.")
     parser.add_argument("--model", default=str(model))
@@ -120,7 +128,7 @@ def parse_zero_shot_args(
     parser.add_argument("--limit", type=int, help="Evaluate only the first N examples.")
     parser.add_argument("--max-model-len", type=int, default=2048)
     parser.add_argument("--max-num-seqs", type=int, default=32)
-    parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--max-tokens", type=int, default=max_tokens)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     args = parser.parse_args()
     if args.limit is not None and args.limit <= 0:
@@ -134,14 +142,10 @@ def parse_zero_shot_args(
     return args
 
 
-def evaluate_zero_shot(
-    args: argparse.Namespace,
-    task_name: str,
-    examples: list[dict[str, Any]],
-    prompts: list[str],
-    score_response: Callable[[dict[str, Any], str], tuple[str | None, bool]],
-) -> dict[str, Any]:
-    """Generate a single response per prompt and collect per-example scores."""
+def generate_zero_shot(
+    args: argparse.Namespace, task_name: str, prompts: list[str]
+) -> tuple[list["RequestOutput"], dict[str, Any], float]:
+    """Generate one response per prompt and time the generation call."""
     from vllm import LLM, SamplingParams
 
     sampling = {
@@ -160,13 +164,23 @@ def evaluate_zero_shot(
     )
 
     print(
-        f"Evaluating {args.model} on {len(examples):,} {task_name} examples...",
+        f"Evaluating {args.model} on {len(prompts):,} {task_name} examples...",
         flush=True,
     )
     start = perf_counter()
     outputs = llm.generate(prompts, sampling_params)
-    generation_seconds = perf_counter() - start
+    return outputs, sampling, perf_counter() - start
 
+
+def evaluate_zero_shot(
+    args: argparse.Namespace,
+    task_name: str,
+    examples: list[dict[str, Any]],
+    prompts: list[str],
+    score_response: Callable[[dict[str, Any], str], tuple[str | None, bool]],
+) -> dict[str, Any]:
+    """Collect per-example scores for a benchmark with reference answers."""
+    outputs, sampling, generation_seconds = generate_zero_shot(args, task_name, prompts)
     samples = []
     for example, output in zip(examples, outputs, strict=True):
         completion = output.outputs[0]
@@ -196,7 +210,7 @@ def evaluate_zero_shot(
     }
 
 
-def save_results(path: Path, results: dict[str, Any]) -> None:
+def save_results(path: Path, results: dict[str, Any] | list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=path.parent) as directory:
         temporary_path = Path(directory) / path.name

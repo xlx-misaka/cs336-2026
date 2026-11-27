@@ -1,3 +1,6 @@
+# Generation: 150.46s (5.35 examples/s) | Reached length limit: 92
+# Predictions saved to /root/autodl-tmp/cs336-2026/assignments/assignment5-alignment/outputs/alpaca_eval_baseline.json
+
 import argparse
 import json
 from pathlib import Path

@@ -11,7 +11,7 @@
 
 ## 1. 检查远程环境
 
-- [ ] 在 AutoDL 的 Bash 终端进入作业根目录。项目在其他位置时，替换 `cd` 的路径。
+- [x] 在 AutoDL 的 Bash 终端进入作业根目录。项目在其他位置时，替换 `cd` 的路径。
 
 ~~~bash
 cd /root/autodl-tmp/cs336-2026/assignments/assignment5-alignment
@@ -22,7 +22,7 @@ ls -lh models/Llama-3.1-8B/config.json \
 
 `nvidia-smi` 查看 GPU 编号和显存占用，`ls` 核对默认模型和数据路径。8B 模型放在其他目录时，在生成命令中加 `--model /你的模型目录`。
 
-- [ ] 如果是新环境，先安装 GPU 依赖。
+- [x] 如果是新环境，先安装 GPU 依赖。
 
 ~~~bash
 uv sync --extra gpu
@@ -32,7 +32,7 @@ uv sync --extra gpu
 
 ## 2. 用 8B 生成回答
 
-- [ ] 可先试跑 2 条。全量命令会处理全部 100 条指令，并将生成耗时和 `examples/s` 写入日志。
+- [x] 可先试跑 2 条。全量命令会处理全部 100 条指令，并将生成耗时和 `examples/s` 写入日志。
 
 ~~~bash
 # 可选试跑

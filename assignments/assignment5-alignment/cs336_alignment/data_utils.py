@@ -1,9 +1,9 @@
 import gzip
-from itertools import chain
 import json
+import random
+from itertools import chain
 from os import PathLike
 from pathlib import Path
-import random
 from typing import Any
 
 import torch
@@ -100,7 +100,7 @@ class PackedSFTDataset(Dataset):
     ) -> None:
         open_fn = gzip.open if Path(dataset_path).suffix == ".gz" else open
 
-        sft_prompt = SFT_PROMPT_PATH.read_text()
+        sft_prompt = SFT_PROMPT_PATH.read_text().strip()
 
         ids = []
 
@@ -124,8 +124,12 @@ class PackedSFTDataset(Dataset):
         for i in range(0, len(ids) - seq_length, seq_length):
             self.metadata.append(
                 {
-                    "input_ids": ids[i : i + seq_length],
-                    "labels": ids[i + 1 : i + 1 + seq_length],
+                    "input_ids": torch.Tensor(ids[i : i + seq_length]).to(
+                        dtype=torch.long
+                    ),
+                    "labels": torch.Tensor(ids[i + 1 : i + 1 + seq_length]).to(
+                        dtype=torch.long
+                    ),
                 }
             )
 

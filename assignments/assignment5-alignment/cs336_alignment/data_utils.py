@@ -124,11 +124,11 @@ class PackedSFTDataset(Dataset):
         for i in range(0, len(ids) - seq_length, seq_length):
             self.metadata.append(
                 {
-                    "input_ids": torch.Tensor(ids[i : i + seq_length]).to(
-                        dtype=torch.long
+                    "input_ids": torch.tensor(
+                        ids[i : i + seq_length], dtype=torch.long
                     ),
-                    "labels": torch.Tensor(ids[i + 1 : i + 1 + seq_length]).to(
-                        dtype=torch.long
+                    "labels": torch.tensor(
+                        ids[i + 1 : i + 1 + seq_length], dtype=torch.long
                     ),
                 }
             )

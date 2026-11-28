@@ -9,7 +9,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
 
-from cs336_alignment.data_utils import tokenize_prompt_and_output
+from cs336_alignment.data_utils import PackedSFTDataset, tokenize_prompt_and_output
 from cs336_alignment.eval_utils import parse_gsm8k_response, parse_mmlu_response
 from cs336_alignment.loss_utils import (
     aggregate_loss_across_microbatch,
@@ -416,7 +416,12 @@ def get_packed_sft_dataset(
         "input_ids" contains the token IDs for the language modeling inputs, and "labels" contains
         the token IDs for the language modeling labels.
     """
-    raise NotImplementedError
+    return PackedSFTDataset(
+        tokenizer,
+        dataset_path,
+        seq_length,
+        shuffle,
+    )
 
 
 def run_iterate_batches(

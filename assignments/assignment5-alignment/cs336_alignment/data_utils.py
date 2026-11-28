@@ -118,25 +118,21 @@ class PackedSFTDataset(Dataset):
         if shuffle:
             random.shuffle(ids)
 
-        ids = list(chain.from_iterable(ids))
-
-        self.metadata: list[dict[str, Any]] = []
-        for i in range(0, len(ids) - seq_length, seq_length):
-            self.metadata.append(
-                {
-                    "input_ids": torch.tensor(
-                        ids[i : i + seq_length], dtype=torch.long
-                    ),
-                    "labels": torch.tensor(
-                        ids[i + 1 : i + 1 + seq_length], dtype=torch.long
-                    ),
-                }
-            )
+        self.metadata = torch.tensor(list(chain.from_iterable(ids)), dtype=torch.long)
+        self.seq_length = seq_length
 
         super().__init__()
 
     def __len__(self) -> int:
-        return len(self.metadata)
+        return max((len(self.metadata) - 1) // self.seq_length, 0)
 
-    def __getitem__(self, i) -> dict[str, Any]:
-        return self.metadata[i]
+    def __getitem__(self, i: int) -> dict[str, Any]:
+        if i >= self.__len__() or i < 0 or not isinstance(i, int):
+            raise IndexError
+
+        return {
+            "input_ids": self.metadata[i * self.seq_length : (i + 1) * self.seq_length],
+            "labels": self.metadata[
+                i * self.seq_length + 1 : (i + 1) * self.seq_length + 1
+            ],
+        }

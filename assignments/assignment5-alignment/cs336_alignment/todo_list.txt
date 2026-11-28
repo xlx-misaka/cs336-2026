@@ -1,2 +1,0 @@
-# TODO
-run grpo_experiments.py on 2 5090

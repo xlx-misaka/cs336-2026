@@ -1,3 +1,6 @@
+# Generation: 30.52s (3.28 examples/s) | Reached length limit: 5
+# Predictions saved to /root/autodl-tmp/cs336-2026/assignments/assignment5-alignment/outputs/sst_baseline.jsonl
+
 import argparse
 import csv
 import json
@@ -15,7 +18,10 @@ def parse_args() -> argparse.Namespace:
     return parse_zero_shot_args(
         "SimpleSafetyTests",
         model=PROJECT_PATH / "models" / "Llama-3.1-8B",
-        dataset=PROJECT_PATH / "data" / "simple_safety_tests" / "simple_safety_tests.csv",
+        dataset=PROJECT_PATH
+        / "data"
+        / "simple_safety_tests"
+        / "simple_safety_tests.csv",
         output=PROJECT_PATH / "outputs" / "sst_baseline.jsonl",
     )
 

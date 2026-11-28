@@ -111,7 +111,7 @@ jq length outputs/alpaca_eval_judge/annotations.json
 ## 常见问题
 
 | 现象 | 先检查什么 |
-|---|---|
+| --- | --- |
 | `alpaca_eval` 找不到 | 确认当前目录是作业根目录，并且已经运行 `uv sync --extra gpu`。 |
 | 报模型路径或 tokenizer 找不到 | 检查裁判配置的 `model_name`。若用共享盘，先确认 `/root/autodl-fs` 已挂载。 |
 | 找不到裁判配置或 prompt | 从作业根目录运行，并保留命令里的 `--annotators_config` 和 `--base-dir .`。 |
